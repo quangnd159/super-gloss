@@ -130,6 +130,7 @@ struct DictIcon: View {
 
 struct GeneralPane: View {
     let model: AppModel
+    @Environment(\.openWindow) private var openWindow
     @State private var hotKey: HotKeyPreset = AppModel.shared.prefs.hotKey
     @State private var zoom: Double = AppModel.shared.prefs.zoom
     @State private var appearance: AppearanceMode = AppModel.shared.prefs.appearance
@@ -147,6 +148,10 @@ struct GeneralPane: View {
                 Text("Press it again to hide. Select text in any app and choose **Services → Look Up in Super Gloss** to look it up directly.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Keyboard Shortcuts…") { openWindow(id: "shortcuts") }
+                }
             }
             Section {
                 Picker("Appearance", selection: $appearance) {
