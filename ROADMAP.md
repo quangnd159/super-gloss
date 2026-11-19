@@ -9,4 +9,4 @@ Super Gloss stays minimal and should just work. Each item below has to fit that.
 3. **Search inside definitions.** For example, "words meaning *short-lived*" should find ephemeral, transient and fleeting. A full-text index alongside the headword FST.
 4. **Saved words.** Star a word to keep it in a quiet list. No account, no sync.
 5. **Lemmatizers beyond English** (French, German, Spanish, …), so "ran → run"-style matching works in every language.
-6. **Distribution.** A universal (Intel + Apple Silicon) build, a signed and notarized DMG, and automated UI tests for the hotkey and focus behavior.
+6. **UI tests.** Automated tests for the hotkey and focus behavior. (The universal build and the signed, notarized DMG shipped in 1.0.0.)
