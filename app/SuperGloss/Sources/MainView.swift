@@ -35,8 +35,10 @@ extension Color {
 struct MainView: View {
     @Bindable var model: AppModel
     @FocusState private var fieldFocused: Bool
+    @FocusState private var findFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @State private var dropTargeted = false
+    @State private var headerHover = false
 
     var body: some View {
         GeometryReader { geo in
@@ -75,7 +77,8 @@ struct MainView: View {
             // Whenever the window comes forward, the search line is ready for typing —
             // unless the reader was working inside an article.
             guard let w = note.object as? NSWindow, w.identifier?.rawValue.hasPrefix("main") == true else { return }
-            if !(w.firstResponder is WKWebView) { fieldFocused = true }
+            if w.firstResponder is WKWebView { return }
+            if model.finding { findFocused = true } else { fieldFocused = true }
         }
         .onChange(of: model.focusTick) {
             fieldFocused = true
@@ -85,19 +88,54 @@ struct MainView: View {
                 }
             }
         }
+        .onChange(of: model.findFocusTick) {
+            findFocused = true
+            let all = model.findSelectAll
+            DispatchQueue.main.async {
+                // Re-opening selects the last query, so typing replaces it; a key typed
+                // in the article continues it.
+                let sel = all ? #selector(NSText.selectAll(_:)) : #selector(NSResponder.moveToEndOfDocument(_:))
+                NSApp.sendAction(sel, to: nil, from: nil)
+            }
+        }
         .animation(.easeOut(duration: 0.12), value: model.query.isEmpty)
     }
 
     private func header(lead: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            SearchField(model: model, focused: $fieldFocused)
-            WordStrip(model: model)
-                .opacity(model.query.isEmpty ? 0 : 1)
+        // With room for the margin, the saved mark sits there, right-aligned with
+        // the dictionary names below; in a narrow window it follows the field.
+        let inMargin = lead >= Column.gap + SavedMark.width + 8
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                SearchField(model: model, focused: $fieldFocused)
+                if !inMargin { SavedMark(model: model, reveal: headerHover) }
+            }
+            .overlay(alignment: .leading) {
+                if inMargin {
+                    SavedMark(model: model, reveal: headerHover)
+                        .offset(x: -(Column.gap + SavedMark.width))
+                }
+            }
+            // The find line takes the related words' place, at the same height.
+            ZStack(alignment: .leading) {
+                if model.finding {
+                    FindLine(model: model, focused: $findFocused)
+                        .transition(.opacity.combined(with: .offset(y: 3)))
+                } else {
+                    WordStrip(model: model)
+                        .transition(.opacity)
+                }
+            }
+            .frame(height: 24)
+            .opacity(model.query.isEmpty ? 0 : 1)
+            .animation(.easeOut(duration: 0.14), value: model.finding)
         }
         .padding(.leading, lead)
         .padding(.trailing, Column.margin)
         .padding(.top, 40)
         .padding(.bottom, 6)
+        .contentShape(Rectangle())
+        .onHover { headerHover = $0 }
     }
 
     private var navButtons: some View {
@@ -190,7 +228,7 @@ struct WordStrip: View {
                             .foregroundStyle(.tertiary)
                     }
                     ForEach(Array(model.suggestions.enumerated()), id: \.offset) { i, s in
-                        StripWord(suggestion: s, selected: i == model.selected) { model.choose(i) }
+                        StripWord(suggestion: s, selected: i == model.selected, saved: model.isSaved(s.word)) { model.choose(i) }
                             .id(i)
                     }
                 }
@@ -217,6 +255,7 @@ struct WordStrip: View {
 struct StripWord: View {
     let suggestion: Suggestion
     let selected: Bool
+    var saved = false
     let action: () -> Void
     @State private var hover = false
 
@@ -234,6 +273,12 @@ struct StripWord: View {
                         .offset(y: 4)
                         .opacity(selected ? 1 : 0)
                 }
+                // Saved words carry a small mark, like a dot pencilled beside them.
+                .overlay(alignment: .topTrailing) {
+                    if saved {
+                        Circle().fill(Color.ink).frame(width: 4, height: 4).offset(x: 6, y: 1)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
@@ -248,10 +293,116 @@ struct StripWord: View {
     }
 
     private var help: String {
-        switch suggestion.kind {
-        case "lemma": "Base form · in \(suggestion.sources) source\(suggestion.sources == 1 ? "" : "s")"
-        default: "In \(suggestion.sources) source\(suggestion.sources == 1 ? "" : "s")"
+        let sources = "\(suggestion.sources) source\(suggestion.sources == 1 ? "" : "s")"
+        let base = suggestion.kind == "lemma" ? "Base form · in \(sources)" : "In \(sources)"
+        return saved ? base + " · saved" : base
+    }
+}
+
+// MARK: - Find line
+
+/// Find in the entries on screen. Takes the related words' row: the query is
+/// underlined like the strip's current word, and the count follows right after it.
+struct FindLine: View {
+    @Bindable var model: AppModel
+    var focused: FocusState<Bool>.Binding
+
+    private static let prompt = "Find in these entries"
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.ink)
+            // The field is exactly as wide as its text, so the count reads as part of the line.
+            Text(model.findQuery.isEmpty ? Self.prompt : model.findQuery)
+                .lineLimit(1)
+                .padding(.trailing, 3)
+                .hidden()
+                .frame(minWidth: 24, maxWidth: 380, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .overlay(alignment: .leading) {
+                    TextField("", text: $model.findQuery, prompt: Text(Self.prompt).foregroundStyle(.tertiary))
+                        .textFieldStyle(.plain)
+                        .focused(focused)
+                        .autocorrectionDisabled()
+                        .onKeyPress(.return, phases: [.down, .repeat]) { press in
+                            model.findStep(press.modifiers.contains(.shift) ? -1 : 1)
+                            return .handled
+                        }
+                        .onKeyPress(keys: [.downArrow, .upArrow], phases: [.down, .repeat]) { press in
+                            model.findStep(press.key == .downArrow ? 1 : -1)
+                            return .handled
+                        }
+                        .onKeyPress(.escape) {
+                            model.endFind()
+                            return .handled
+                        }
+                        .accessibilityLabel("Find in these entries")
+                }
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(Color.ink)
+                        .frame(height: 2)
+                        .offset(y: 4)
+                        .opacity(model.findQuery.isEmpty ? 0.3 : 1)
+                }
+            status
+                .padding(.leading, 6)
+            Spacer(minLength: 8)
+            HStack(spacing: 2) {
+                NavButton(symbol: "chevron.up", help: "Previous match (⇧⌘G)", enabled: model.findTotal > 0) { model.findStep(-1) }
+                NavButton(symbol: "chevron.down", help: "Next match (⌘G)", enabled: model.findTotal > 0) { model.findStep(1) }
+                NavButton(symbol: "xmark", help: "Done (Esc)", enabled: true) { model.endFind() }
+            }
         }
+        .font(.system(size: 13.5))
+        .padding(.vertical, 3)
+    }
+
+    @ViewBuilder private var status: some View {
+        if model.findQuery.isEmpty || (model.findPending && model.findTotal == 0) {
+            EmptyView()
+        } else if model.findTotal == 0 {
+            Text("No matches").foregroundStyle(.secondary)
+        } else if model.findIndex > 0 {
+            Text("\(model.findIndex) of \(model.findTotal)").foregroundStyle(.tertiary).monospacedDigit()
+        } else {
+            Text("\(model.findTotal) \(model.findTotal == 1 ? "match" : "matches")").foregroundStyle(.tertiary).monospacedDigit()
+        }
+    }
+}
+
+// MARK: - Saved mark
+
+/// Saves the word on screen. A bookmark in the margin beside the word: filled in
+/// the accent when saved, otherwise shown only while the pointer is over the header.
+struct SavedMark: View {
+    let model: AppModel
+    let reveal: Bool
+    static let width: CGFloat = 22
+    @State private var hover = false
+
+    var body: some View {
+        let saved = model.shownIsSaved
+        let present = model.shownWord != nil
+        Button { model.toggleSaved() } label: {
+            Image(systemName: saved ? "bookmark.fill" : "bookmark")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(saved ? AnyShapeStyle(Color.ink) : AnyShapeStyle(hover ? .secondary : .tertiary))
+                .contentTransition(.symbolEffect(.replace.downUp))
+                .symbolEffect(.bounce.down, value: model.saveTick)
+                .frame(width: Self.width, height: 40, alignment: .trailing)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(present && (saved || reveal || hover) ? 1 : 0)
+        .allowsHitTesting(present)
+        .onHover { hover = $0 }
+        .help(saved ? "Saved — click to remove (⌘D)" : "Save this word (⌘D)")
+        .animation(.easeOut(duration: 0.15), value: reveal)
+        .animation(.easeOut(duration: 0.15), value: saved)
+        .accessibilityLabel(saved ? "Remove from saved" : "Save this word")
     }
 }
 
@@ -289,23 +440,19 @@ struct Home: View {
             if model.dictionaries.isEmpty {
                 Onboarding(model: model)
             } else {
+                if !model.saved.isEmpty {
+                    SavedWords(model: model)
+                }
                 if !model.history.isEmpty {
                     VStack(alignment: .leading, spacing: 7) {
                         Label2("Recent")
                         ForEach(model.history.prefix(9), id: \.self) { w in
-                            HomeLink(text: w) { model.commit(w) }
+                            HomeLink(text: model.label(w)) { model.commit(w) }
                         }
                     }
                 }
                 HStack(spacing: 18) {
-                    Button { model.surprise() } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "die.face.5")
-                            Text("Surprise me")
-                        }
-                        .foregroundStyle(Color.ink)
-                    }
-                    .help("A random word from your library (⌘R)")
+                    SurpriseButton { model.surprise() }
                     Button { openWindow(id: "shortcuts") } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "command")
@@ -326,6 +473,71 @@ struct Home: View {
     }
 }
 
+/// Home: saved words set as a flowing line of text, newest first.
+struct SavedWords: View {
+    let model: AppModel
+    @State private var expanded = false
+    private static let shown = 24
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label2("Saved")
+            Flow(spacing: 18, lineSpacing: 4) {
+                ForEach(expanded ? model.saved : Array(model.saved.prefix(Self.shown)), id: \.self) { w in
+                    HomeLink(text: model.label(w)) { model.commit(w) }
+                        .contextMenu {
+                            Button("Remove from Saved") { model.unsave(w) }
+                        }
+                }
+                if !expanded && model.saved.count > Self.shown {
+                    Button("\(model.saved.count - Self.shown) more") { expanded = true }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.ink)
+                        .frame(height: 25)
+                }
+            }
+        }
+    }
+}
+
+/// Lays children out left to right, wrapping like words in a paragraph.
+struct Flow: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width ?? .infinity, subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (s, p) in zip(subviews, arrange(width: bounds.width, subviews).origins) {
+            s.place(at: CGPoint(x: bounds.minX + p.x, y: bounds.minY + p.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(width: CGFloat, _ subviews: Subviews) -> (origins: [CGPoint], size: CGSize) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var line: CGFloat = 0
+        var widest: CGFloat = 0
+        for s in subviews {
+            let size = s.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > width {
+                x = 0
+                y += line + lineSpacing
+                line = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            widest = max(widest, x - spacing)
+            line = max(line, size.height)
+        }
+        return (origins, CGSize(width: widest, height: y + line))
+    }
+}
+
 struct Label2: View {
     let text: String
     init(_ t: String) { text = t }
@@ -334,6 +546,27 @@ struct Label2: View {
             .font(.system(size: 10.5, weight: .semibold))
             .tracking(0.6)
             .foregroundStyle(.tertiary)
+    }
+}
+
+/// The die rolls to a new face whenever the pointer comes near.
+struct SurpriseButton: View {
+    let action: () -> Void
+    @State private var face = Int.random(in: 1...6)
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "die.face.\(face)")
+                    .contentTransition(.symbolEffect(.replace.downUp))
+                Text("Surprise me")
+            }
+            .foregroundStyle(Color.ink)
+        }
+        .onHover { inside in
+            guard inside else { return }
+            face = (face + Int.random(in: 0...4)) % 6 + 1
+        }
+        .help("A word worth meeting from your library (⌘R)")
     }
 }
 

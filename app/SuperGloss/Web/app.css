@@ -55,6 +55,10 @@ body {
   border-top: 1px solid var(--rule);
 }
 .src:first-child { border-top: 0; padding-top: 6px; }
+/* Finding: sources without a match recede, so the page shows where the hits are.
+   Their frames dim themselves (frame.js); this dims the name in the margin. */
+.gloss { transition: opacity 160ms ease-out; }
+body.finding .src.nofind .gloss { opacity: 0.3; }
 
 .gloss {
   position: sticky;
@@ -79,6 +83,16 @@ body {
   border-radius: 4px;
   object-fit: contain;
 }
+.gloss .fn {
+  display: block;
+  margin-top: 4px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.gloss:has(.fn) .n { display: none; }
 .gloss .n {
   display: block;
   margin-top: 4px;
@@ -88,7 +102,29 @@ body {
   color: var(--faint);
 }
 
-.body { min-width: 0; }
+.body { min-width: 0; position: relative; }
+
+/* Where a followed link landed: the target's first line, tinted for a moment,
+   with an accent edge like a reader's pencil mark. */
+.mark {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.mark::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  border-radius: 4px 0 0 4px;
+  background: var(--accent);
+}
+/* Blend so the text under the tint keeps its full contrast. */
+.mark { mix-blend-mode: multiply; }
+@media (prefers-color-scheme: dark) {
+  .mark { mix-blend-mode: screen; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+}
 iframe {
   display: block;
   width: 100%;
@@ -117,6 +153,6 @@ iframe {
     display: flex; align-items: center; gap: 7px;
   }
   .gloss img { margin: 0; width: 15px; height: 15px; }
-  .gloss .n { margin: 0 0 0 auto; }
+  .gloss .n, .gloss .fn { margin: 0 0 0 auto; }
   #via { padding-left: 0; }
 }

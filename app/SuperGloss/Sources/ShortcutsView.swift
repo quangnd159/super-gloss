@@ -14,11 +14,18 @@ struct ShortcutsView: View {
                 ShortcutRow("Clear the search, or hide when empty", keys: ["Esc"])
                 ShortcutRow("Look up a word in an entry", gesture: "Double-click")
             }
+            Section("Find in the entries") {
+                ShortcutRow("Find", keys: ["⌘", "F"])
+                ShortcutRow("Next match", keys: ["Return"], or: ["⌘", "G"])
+                ShortcutRow("Previous match", keys: ["⇧", "Return"], or: ["⇧", "⌘", "G"])
+                ShortcutRow("Done", keys: ["Esc"])
+            }
             Section("Read") {
                 ShortcutRow("Next dictionary", keys: ["⌥", "↓"], or: ["⌥", "⌘", "↓"])
                 ShortcutRow("Previous dictionary", keys: ["⌥", "↑"], or: ["⌥", "⌘", "↑"])
                 ShortcutRow("Scroll a page", keys: ["Page Down"], or: ["Page Up"])
                 ShortcutRow("Pronounce", keys: ["⌘", "P"])
+                ShortcutRow("Save the word, or remove it", keys: ["⌘", "D"])
                 ShortcutRow("Hide or show a dictionary's entry", gesture: "Click its name")
             }
             Section("Go") {

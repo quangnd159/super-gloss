@@ -4,8 +4,10 @@
 //!   sgloss [--cache DIR] list   <roots…>
 //!   sgloss [--cache DIR] suggest <query> <roots…>
 //!   sgloss [--cache DIR] lookup <word> <roots…>        (prints article HTML)
+//!   sgloss [--cache DIR] link   <target> <roots…>      (resolves an entry:// target in each dictionary)
 //!   sgloss [--cache DIR] bench  <roots…>
 //!   sgloss [--cache DIR] verify <roots…>               (renders a sample of every dictionary)
+//!   sgloss [--cache DIR] random <roots…>               (N random words, N=40 by default)
 
 use std::time::Instant;
 use supergloss::library::{Config, Library};
@@ -19,7 +21,7 @@ fn main() {
     }
     let cmd = args.first().cloned().unwrap_or_default();
     let (arg, roots) = match cmd.as_str() {
-        "suggest" | "lookup" | "serve" | "audio" => (args.get(1).cloned().unwrap_or_default(), args[2.min(args.len())..].to_vec()),
+        "suggest" | "lookup" | "link" | "serve" | "audio" => (args.get(1).cloned().unwrap_or_default(), args[2.min(args.len())..].to_vec()),
         _ => (String::new(), args[1.min(args.len())..].to_vec()),
     };
     let lib = Library::new(cache);
@@ -62,6 +64,11 @@ fn main() {
                 println!("{page}");
             }
         }
+        "link" => {
+            for d in lib.summaries() {
+                println!("{:?}  [{}]", lib.resolve_link(&d.id, &arg), d.name);
+            }
+        }
         "bench" => {
             let queries = ["a", "ab", "aba", "run", "beauti", "xylo", "serendipity", "qzx", "đi", "ăn", "colour", "recieve", "a*le", "th?nk"];
             let t = Instant::now();
@@ -80,6 +87,18 @@ fn main() {
                 }
             }
             eprintln!("lookup+render 5 words across all dictionaries: {:?}", t.elapsed());
+        }
+        "random" => {
+            let n: usize = std::env::var("N").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+            let t = Instant::now();
+            lib.random_pick();
+            eprintln!("first (calibrates) in {:?}", t.elapsed());
+            let t = Instant::now();
+            let picks: Vec<(String, u32)> = (0..n).filter_map(|_| lib.random_pick()).collect();
+            eprintln!("{} words in {:?}", picks.len(), t.elapsed());
+            for (w, k) in picks {
+                println!("{k:3}  {w}");
+            }
         }
         "verify" => verify(&lib),
         "audio" => {

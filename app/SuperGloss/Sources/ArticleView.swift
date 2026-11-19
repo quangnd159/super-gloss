@@ -82,7 +82,7 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
 
     // MARK: ArticleController
 
-    func show(_ result: LookupResult?, dictionaries: [DictSummary]) {
+    func show(_ result: LookupResult?, dictionaries: [DictSummary], landing: Landing?) {
         guard let result, !result.hits.isEmpty else {
             run("window.sg && sg.clear()")
             return
@@ -101,6 +101,15 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         }
         var payload: [String: Any] = ["word": result.word, "hits": hits]
         if let via = result.via { payload["via"] = via }
+        switch landing {
+        case let .anchor(dict, id, find):
+            var land: [String: Any] = ["dict": dict]
+            if let id { land["id"] = id }
+            if let find { land["find"] = find }
+            payload["land"] = land
+        case let .place(p): payload["land"] = ["dict": p.dict, "offset": p.offset]
+        case nil: break
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
         run("sg.show(\(json))")
@@ -111,9 +120,18 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
     func pronounce() { run("sg.pronounce() || null") }
     func setZoom(_ zoom: Double) { web?.pageZoom = zoom }
 
+    func find(_ query: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [query]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        run("sg.find(\(json)[0])")
+    }
+
+    func findStep(_ direction: Int) { run("sg.findStep(\(direction))") }
+    func prepareFind() { run("sg.prepareFind()") }
+
     private func run(_ js: String) {
         guard loaded else {
-            if js.hasPrefix("sg.show") || js.contains("clear") { queued = js }
+            if js.hasPrefix("sg.show") || js.hasPrefix("window.sg && sg.clear") { queued = js }
             return
         }
         web?.evaluateJavaScript(js, completionHandler: nil)
@@ -132,6 +150,19 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
             }
         case "lookup":
             if let w = body["word"] as? String, !w.isEmpty { model.commit(w) }
+        case "find":
+            model.noteFind(total: body["total"] as? Int ?? 0, index: body["index"] as? Int ?? 0,
+                           pending: body["pending"] as? Bool ?? false)
+        case "place":
+            if let w = body["word"] as? String {
+                let p = body["place"] as? [String: Any]
+                let place = (p?["dict"] as? String).flatMap { d in (p?["offset"] as? Double).map { Place(dict: d, offset: $0) } }
+                model.noteReading(w, place)
+            }
+        case "link":
+            if let t = body["target"] as? String, let d = body["dict"] as? String, !t.isEmpty {
+                model.follow(t, text: body["text"] as? String, from: d)
+            }
         case "sound":
             if let d = body["dict"] as? String, let p = body["path"] as? String { model.audio.play(dict: d, path: p) }
         case "open":
@@ -169,8 +200,7 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         case "entry", "bword":
             let target = String(raw.dropFirst(8))
             if !target.hasPrefix("#") {
-                let w = target.removingPercentEncoding ?? target
-                model.commit(w.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+                model.follow(target.removingPercentEncoding ?? target, text: nil, from: frameHost ?? "")
             }
         case "http", "https", "mailto":
             if action.navigationType == .linkActivated { NSWorkspace.shared.open(url) }
@@ -201,7 +231,7 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         queued = nil
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
-            self.show(shown, dictionaries: self.model.dictionaries)
+            self.show(shown, dictionaries: self.model.dictionaries, landing: nil)
         }
     }
 

@@ -4,11 +4,14 @@ import SwiftUI
 
 @MainActor
 protocol ArticleController: AnyObject {
-    func show(_ result: LookupResult?, dictionaries: [DictSummary])
+    func show(_ result: LookupResult?, dictionaries: [DictSummary], landing: Landing?)
     func jump(_ direction: Int)
     func page(_ direction: Int)
     func pronounce()
     func setZoom(_ zoom: Double)
+    func find(_ query: String)
+    func findStep(_ direction: Int)
+    func prepareFind()
 }
 
 @MainActor @Observable
@@ -36,9 +39,33 @@ final class AppModel {
     // MARK: navigation
 
     private(set) var committed: String?
-    private(set) var backStack: [String] = []
-    private(set) var forwardStack: [String] = []
+    private(set) var backStack: [Visit] = []
+    private(set) var forwardStack: [Visit] = []
     private(set) var history: [String]
+
+    // MARK: find in entries
+
+    /// The find line is open under the word.
+    private(set) var finding = false
+    /// Kept between finds, like a find pasteboard: ⌘F brings it back selected.
+    var findQuery = "" {
+        didSet { if finding && findQuery != oldValue { article?.find(findQuery) } }
+    }
+    private(set) var findTotal = 0
+    /// 1-based position of the current match; 0 when there is none.
+    private(set) var findIndex = 0
+    /// The article view is still collecting matches from its sources.
+    private(set) var findPending = false
+    /// Incremented to ask the find field to take focus (and select all when `findSelectAll`).
+    private(set) var findFocusTick = 0
+    private(set) var findSelectAll = false
+
+    // MARK: saved words
+
+    /// Saved words and link keys, newest first.
+    private(set) var saved: [String]
+    /// Incremented when a word is saved, for the mark's moment of motion.
+    private(set) var saveTick = 0
 
     // MARK: library
 
@@ -58,6 +85,10 @@ final class AppModel {
     var openMainWindow: (() -> Void)?
 
     @ObservationIgnored private var programmatic = false
+    /// Where to land on the next display of `word` (a followed link, or Back/Forward).
+    @ObservationIgnored private var pendingLanding: (word: String, landing: Landing)?
+    /// The reading position the article view last reported, for the word it showed.
+    @ObservationIgnored private var reading: (word: String, place: Place?)?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var poller: Timer?
@@ -71,6 +102,7 @@ final class AppModel {
         engine = Engine(cacheDirectory: caches)
         audio = AudioPlayer(engine: engine)
         history = prefs.history
+        saved = prefs.saved
         applyConfiguration()
     }
 
@@ -200,9 +232,13 @@ final class AppModel {
     }
 
     private func display(_ r: LookupResult?) {
+        // Find belongs to the word it was opened on; a different word closes it.
+        if finding && r?.word != shown?.word { endFind(refocus: false) }
         shown = r
         noResults = r.map { $0.hits.isEmpty } ?? false
-        article?.show(r?.hits.isEmpty == false ? r : nil, dictionaries: dictionaries)
+        let landing = pendingLanding.flatMap { $0.word == r?.word ? $0.landing : nil }
+        pendingLanding = nil
+        article?.show(r?.hits.isEmpty == false ? r : nil, dictionaries: dictionaries, landing: landing)
     }
 
     /// Ghost completion for the search field.
@@ -245,18 +281,48 @@ final class AppModel {
         }
     }
 
+    /// Follows a cross-reference clicked inside dictionary `dict`: "above_1" opens
+    /// "above"; "@topic_…" pages get a readable search line. The view lands in the
+    /// same dictionary, on what the link's text (`text`) names.
+    func follow(_ target: String, text: String?, from dict: String) {
+        let engine = engine
+        Task {
+            let link = await Task.detached(priority: .userInitiated) { engine.resolveLink(dict: dict, target: target) }.value
+            let find = text.flatMap { $0.isEmpty ? nil : $0 }
+            self.commit(link.word, landing: dict.isEmpty ? nil : .anchor(dict: dict, id: link.anchor, find: find))
+        }
+    }
+
+    /// The search-line text for a committed word or link key.
+    func label(_ word: String) -> String { engine.label(word) }
+
+    /// The article view reports where the reader is (nil: at the top).
+    func noteReading(_ word: String, _ place: Place?) {
+        reading = (word, place)
+    }
+
+    private func visit(_ word: String) -> Visit {
+        Visit(word: word, place: reading?.word == word ? reading?.place : nil)
+    }
+
     /// Looks up `word` as a deliberate navigation (links, history, services).
-    func commit(_ word: String) {
+    func commit(_ word: String, landing: Landing? = nil) {
         let w = word.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !w.isEmpty else { return }
         if let c = committed, c != w {
-            backStack.append(c)
+            backStack.append(visit(c))
             if backStack.count > 200 { backStack.removeFirst() }
             forwardStack.removeAll()
         }
         committed = w
         record(w)
-        setQuery(w, show: w)
+        navigate(to: w, landing: landing)
+    }
+
+    private func navigate(to word: String, landing: Landing?) {
+        pendingLanding = landing.map { (word, $0) }
+        // Landing in the article already on screen still has to re-show it.
+        setQuery(label(word), show: word, force: landing != nil)
         requestFocus(selectAll: true)
     }
 
@@ -265,11 +331,11 @@ final class AppModel {
         commit(word)
     }
 
-    private func setQuery(_ q: String, show word: String?) {
+    private func setQuery(_ q: String, show word: String?, force: Bool = false) {
         programmatic = true
         query = q
         programmatic = false
-        search(show: word)
+        search(show: word, force: force)
     }
 
     func clear() {
@@ -280,26 +346,33 @@ final class AppModel {
 
     func goBack() {
         guard let prev = backStack.popLast() else { return }
-        if let c = committed { forwardStack.append(c) }
-        committed = prev
-        setQuery(prev, show: prev)
-        requestFocus(selectAll: true)
+        if let c = committed { forwardStack.append(visit(c)) }
+        committed = prev.word
+        navigate(to: prev.word, landing: prev.place.map(Landing.place))
     }
 
     func goForward() {
         guard let next = forwardStack.popLast() else { return }
-        if let c = committed { backStack.append(c) }
-        committed = next
-        setQuery(next, show: next)
-        requestFocus(selectAll: true)
+        if let c = committed { backStack.append(visit(c)) }
+        committed = next.word
+        navigate(to: next.word, landing: next.place.map(Landing.place))
     }
 
+    /// A word worth meeting that you have not looked up or saved yet.
     func surprise() {
         let engine = engine
+        let met = Set((history + saved).map { $0.lowercased() })
         Task {
-            if let w = await Task.detached(priority: .userInitiated, operation: { engine.randomWord() }).value {
-                self.commit(w)
-            }
+            let word = await Task.detached(priority: .userInitiated) { () -> String? in
+                var last: String?
+                for _ in 0..<4 {
+                    guard let w = engine.randomWord() else { break }
+                    if !met.contains(w.lowercased()) { return w }
+                    last = w
+                }
+                return last
+            }.value
+            if let word { self.commit(word) } else { NSSound.beep() }
         }
     }
 
@@ -310,6 +383,19 @@ final class AppModel {
 
     /// A character typed while the article had focus.
     func typed(_ key: String) {
+        if finding {
+            switch key {
+            case "Escape": endFind()
+            case "Enter": findStep(1)
+            case "ShiftEnter": findStep(-1)
+            default:
+                findQuery += key
+                findSelectAll = false
+                findFocusTick &+= 1
+            }
+            return
+        }
+        if key == "Enter" || key == "ShiftEnter" { return }
         if key == "Escape" {
             clear()
             return
@@ -323,6 +409,81 @@ final class AppModel {
         history.insert(w, at: 0)
         if history.count > 60 { history.removeLast(history.count - 60) }
         prefs.history = history
+    }
+
+    // MARK: find in entries
+
+    /// Whether there is an article to find in.
+    var canFind: Bool { !query.isEmpty && shown?.hits.isEmpty == false }
+
+    /// ⌘F: opens the find line (or re-selects it). Without an article, goes to the search line.
+    func startFind() {
+        guard canFind else {
+            requestFocus(selectAll: true)
+            return
+        }
+        if !finding {
+            finding = true
+            findTotal = 0
+            findIndex = 0
+            findPending = !findQuery.isEmpty
+            if findQuery.isEmpty { article?.prepareFind() } else { article?.find(findQuery) }
+        }
+        findSelectAll = true
+        findFocusTick &+= 1
+    }
+
+    func endFind(refocus: Bool = true) {
+        guard finding else { return }
+        finding = false
+        findTotal = 0
+        findIndex = 0
+        findPending = false
+        article?.find("")
+        if refocus { requestFocus(selectAll: false) }
+    }
+
+    /// Next (1) or previous (-1) match; opens the find line if it is closed.
+    func findStep(_ direction: Int) {
+        guard finding else { return startFind() }
+        article?.findStep(direction)
+    }
+
+    func noteFind(total: Int, index: Int, pending: Bool) {
+        findTotal = total
+        findIndex = index
+        findPending = pending
+    }
+
+    // MARK: saved words
+
+    /// The word an article is about: the base form when one was used ("ran" → "run").
+    var shownWord: String? {
+        guard let r = shown, !r.hits.isEmpty else { return nil }
+        return r.via ?? r.word
+    }
+
+    func isSaved(_ word: String) -> Bool {
+        saved.contains { $0.caseInsensitiveCompare(word) == .orderedSame }
+    }
+
+    var shownIsSaved: Bool { shownWord.map(isSaved) ?? false }
+
+    /// ⌘D: saves the word on screen, or removes it when it is already saved.
+    func toggleSaved() {
+        guard let w = shownWord else { return }
+        if isSaved(w) {
+            unsave(w)
+        } else {
+            saved.insert(w, at: 0)
+            prefs.saved = saved
+            saveTick &+= 1
+        }
+    }
+
+    func unsave(_ word: String) {
+        saved.removeAll { $0.caseInsensitiveCompare(word) == .orderedSame }
+        prefs.saved = saved
     }
 
     func clearHistory() {
@@ -389,6 +550,10 @@ final class Prefs {
     var history: [String] {
         get { d.stringArray(forKey: "history") ?? [] }
         set { d.set(newValue, forKey: "history") }
+    }
+    var saved: [String] {
+        get { d.stringArray(forKey: "saved") ?? [] }
+        set { d.set(newValue, forKey: "saved") }
     }
     var zoom: Double {
         get { d.object(forKey: "zoom") as? Double ?? 1.0 }

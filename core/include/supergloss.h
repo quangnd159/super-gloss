@@ -19,6 +19,8 @@ char *sg_dictionaries(const SGLibrary *lib);
 char *sg_suggest(const SGLibrary *lib, const char *query, uint32_t limit);
 char *sg_lookup(const SGLibrary *lib, const char *word);
 char *sg_random_word(const SGLibrary *lib);
+char *sg_resolve_link(const SGLibrary *lib, const char *dict_id, const char *target);
+char *sg_link_label(const char *key);
 
 uint8_t *sg_serve(const SGLibrary *lib, const char *url, size_t *out_len, char **out_mime);
 uint8_t *sg_audio(const SGLibrary *lib, const char *dict_id, const char *path, size_t *out_len);

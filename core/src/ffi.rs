@@ -100,6 +100,20 @@ pub extern "C" fn sg_lookup(p: *const SGLibrary, word: *const c_char) -> *mut c_
     guard(std::ptr::null_mut(), || lib(p).map(|l| json(&l.lookup(cstr(word)))).unwrap_or(std::ptr::null_mut()))
 }
 
+/// Resolves an `entry://` target clicked inside dictionary `dict` to `{word,label,anchor}`.
+#[no_mangle]
+pub extern "C" fn sg_resolve_link(p: *const SGLibrary, dict: *const c_char, target: *const c_char) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        lib(p).map(|l| json(&l.resolve_link(cstr(dict), cstr(target)))).unwrap_or(std::ptr::null_mut())
+    })
+}
+
+/// Readable form of a word or link key for the search line ("above_1" → "above").
+#[no_mangle]
+pub extern "C" fn sg_link_label(key: *const c_char) -> *mut c_char {
+    guard(std::ptr::null_mut(), || out_string(crate::library::link_label(cstr(key))))
+}
+
 #[no_mangle]
 pub extern "C" fn sg_random_word(p: *const SGLibrary) -> *mut c_char {
     guard(std::ptr::null_mut(), || {

@@ -51,6 +51,37 @@ struct Hit: Codable, Hashable, Sendable {
     let foreign: Bool
 }
 
+/// Where a cross-reference clicked inside an article leads.
+struct ResolvedLink: Codable, Sendable {
+    /// What to look up.
+    let word: String
+    /// What the search line shows.
+    let label: String
+    /// Element id to scroll to in the linking dictionary's article.
+    let anchor: String?
+}
+
+/// A reading position: this far (in CSS px) below the top of one dictionary's section.
+struct Place: Equatable, Sendable {
+    let dict: String
+    let offset: Double
+}
+
+/// Where the view should land when an article is shown.
+enum Landing: Equatable, Sendable {
+    /// What a followed link points at in dictionary `dict`, marked briefly on arrival:
+    /// element `id` (or the whole article), narrowed to the text that was clicked.
+    case anchor(dict: String, id: String?, find: String?)
+    /// Where the reader was, restored silently by Back and Forward.
+    case place(Place)
+}
+
+/// A step in Back/Forward history.
+struct Visit: Equatable, Sendable {
+    let word: String
+    let place: Place?
+}
+
 struct LookupResult: Codable, Hashable, Sendable {
     let word: String
     let via: String?

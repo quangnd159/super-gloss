@@ -40,8 +40,15 @@ struct AppCommands: Commands {
         CommandGroup(after: .textEditing) {
             Button("Look Up…") { model.requestFocus(selectAll: true) }
                 .keyboardShortcut("l")
-            Button("Find in Library") { model.requestFocus(selectAll: true) }
+            Divider()
+            Button("Find in Entries…") { model.startFind() }
                 .keyboardShortcut("f")
+            Button("Find Next") { model.findStep(1) }
+                .keyboardShortcut("g")
+                .disabled(!model.canFind)
+            Button("Find Previous") { model.findStep(-1) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(!model.canFind)
         }
         CommandMenu("Go") {
             Button("Back") { model.goBack() }
@@ -58,6 +65,9 @@ struct AppCommands: Commands {
             Divider()
             Button("Pronounce") { model.article?.pronounce() }
                 .keyboardShortcut("p")
+            Button(model.shownIsSaved ? "Remove from Saved" : "Save Word") { model.toggleSaved() }
+                .keyboardShortcut("d")
+                .disabled(model.shownWord == nil)
             Button("Surprise Me") { model.surprise() }
                 .keyboardShortcut("r")
         }

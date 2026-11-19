@@ -133,6 +133,17 @@ pub struct LookupResult {
     pub hits: Vec<Hit>,
 }
 
+/// Where a cross-reference inside an article leads.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Link {
+    /// What to look up.
+    pub word: String,
+    /// What the search line shows.
+    pub label: String,
+    /// Element id to scroll to in the linking dictionary's article.
+    pub anchor: Option<String>,
+}
+
 pub struct Library {
     cache_root: PathBuf,
     dicts: RwLock<Vec<Arc<Dict>>>,
@@ -141,6 +152,95 @@ pub struct Library {
     workers: AtomicUsize,
     claim: Mutex<()>,
     seed: AtomicU64,
+    surprise: Mutex<Surprise>,
+}
+
+/// Uniform draws that learn a library's spread curve.
+const CALIBRATION_DRAWS: usize = 6_000;
+/// Rejection-sampling budget per surprise; acceptance is a few percent, so this is never reached in practice.
+const MAX_DRAWS: usize = 20_000;
+/// Share of draws that must be shared by two or more dictionaries before single-source words are left out.
+const MIN_SHARED: f64 = 0.05;
+/// Surprise words not repeated within a session.
+const RECENT: usize = 512;
+
+#[derive(Default)]
+struct Surprise {
+    /// Library generation the calibration belongs to.
+    gen: u64,
+    /// Relative acceptance per spread level.
+    accept: Vec<f64>,
+    recent: std::collections::VecDeque<String>,
+}
+
+impl Surprise {
+    fn remember(&mut self, word: &str) {
+        if self.recent.len() == RECENT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(word.to_string());
+    }
+}
+
+struct Draw {
+    word: String,
+    /// Dictionaries that list the word.
+    spread: u32,
+    /// Entries those dictionaries hold for it.
+    entries: u32,
+}
+
+/// How many dictionaries list `key`, and how many entries they hold for it.
+fn spread(dicts: &[(Arc<Dict>, Arc<Loaded>)], key: &[u8]) -> (u32, u32) {
+    dicts.iter().filter_map(|(_, l)| l.index.get(key)).fold((0, 0), |(k, c), g| (k + 1, c + g.range().len() as u32))
+}
+
+/// Weight of spread level `k` when the widest-spread words reach `widest`
+/// dictionaries: a bell over the relative spread, low for rarities and for
+/// words everyone knows, highest in the middle.
+fn bell(k: usize, widest: usize) -> f64 {
+    let q = (k as f64 - 0.5) / widest.max(1) as f64;
+    q * (1.0 - q)
+}
+
+/// Whether an article carries an offensive-usage label: a short text run
+/// made only of usage-label words ("OFFENSIVE SLANG", "taboo",
+/// "informal, derogatory"), unlike running text ("an offensive action").
+fn labelled_offensive(html: &str) -> bool {
+    const STRONG: &[&str] = &["offensive", "taboo", "vulgar", "obscene", "slur", "derogatory", "disparaging", "insulting", "abusive"];
+    const LABEL: &[&str] = &[
+        "slang", "informal", "impolite", "very", "highly", "usually", "often", "chiefly", "mainly", "especially", "sometimes",
+        "considered", "ethnic", "racial", "rude", "disapproving", "old-fashioned", "british", "american", "spoken", "and", "or",
+        "us", "uk", "brit", "amer", "in", "a", "an", "used", "as", "term", "word", "offens",
+    ];
+    html.split('<').filter_map(|part| part.split_once('>').map(|(_, text)| text)).any(|text| {
+        let t = text.trim();
+        if t.is_empty() || t.len() > 48 || !t.is_ascii() {
+            return false;
+        }
+        let t = t.to_ascii_lowercase();
+        let mut strong = false;
+        let all_label = t.split(|c: char| !c.is_ascii_alphabetic() && c != '-').filter(|w| !w.is_empty()).all(|w| {
+            let s = STRONG.contains(&w);
+            strong |= s;
+            s || LABEL.contains(&w)
+        });
+        strong && all_label
+    })
+}
+
+/// Looks like an ordinary word or phrase: starts lowercase, has a vowel,
+/// letters with inner spaces, hyphens or apostrophes. Excludes proper
+/// nouns, abbreviations ("tnt"), link keys ("above_1", "@topic…") and
+/// numbered or symbol headwords.
+fn word_shaped(w: &str) -> bool {
+    let n = w.chars().count();
+    (3..=32).contains(&n)
+        && w.chars().next().is_some_and(char::is_lowercase)
+        && w.chars().last().is_some_and(char::is_alphabetic)
+        && w.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | '-' | '\''))
+        && !w.contains("  ")
+        && fold::fold(w).chars().any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y') || !c.is_ascii())
 }
 
 const MAX_WORKERS: usize = 3;
@@ -158,6 +258,7 @@ impl Library {
             workers: AtomicUsize::new(0),
             claim: Mutex::new(()),
             seed: AtomicU64::new(seed),
+            surprise: Mutex::new(Surprise::default()),
         })
     }
 
@@ -472,6 +573,10 @@ impl Library {
             })
             .collect();
 
+        // Numbered entry keys ("above_1") are link targets, not words, when the word itself is listed.
+        let listed: HashSet<String> = out.iter().map(|(_, _, s)| fold::lower(&s.word)).collect();
+        out.retain(|(_, _, s)| numbered_base(&s.word).is_none_or(|b| !listed.contains(&fold::lower(b))));
+
         // Base forms of inflected input ("running" → "run").
         let has_exact = out.iter().any(|(r, _, _)| *r == 0);
         for lemma in morph::english_lemmas(&lq) {
@@ -623,42 +728,186 @@ impl Library {
         hits
     }
 
+    /// Resolves an `entry://` target clicked in dictionary `dict`. Numbered keys
+    /// ("above_1", "call_2#call_idmg_19") lead to the plain word when its article
+    /// holds that entry, so the search line reads "above" and the view scrolls to it.
+    pub fn resolve_link(&self, dict: &str, target: &str) -> Link {
+        let (key, anchor) = match target.split_once('#') {
+            Some((k, a)) => (k, Some(a.to_string()).filter(|a| !a.is_empty())),
+            None => (target, None),
+        };
+        let key = key.trim().trim_end_matches('/');
+        if let Some(base) = numbered_base(key) {
+            let id = anchor.clone().unwrap_or_else(|| key.to_string());
+            if self.article_has_id(dict, base, &id) {
+                return Link { word: base.to_string(), label: base.to_string(), anchor: Some(id) };
+            }
+        }
+        Link { word: key.to_string(), label: link_label(key), anchor }
+    }
+
+    fn article_has_id(&self, dict: &str, word: &str, id: &str) -> bool {
+        let Some(l) = self.dict(dict).and_then(|d| d.loaded()) else { return false };
+        let Some(g) = fold::index_key(word).and_then(|k| l.index.get(&k)) else { return false };
+        let needles = [format!("id=\"{id}\""), format!("id='{id}'"), format!("name=\"{id}\""), format!("name='{id}'")];
+        g.range().filter_map(|i| l.index.entry(i)).any(|(w, loc)| {
+            l.reader.article(&l.index, w, loc).is_ok_and(|html| needles.iter().any(|n| html.contains(n.as_str())))
+        })
+    }
+
+    /// A word worth meeting, for "Surprise me".
     pub fn random_word(&self) -> Option<String> {
+        self.random_pick().map(|(w, _)| w)
+    }
+
+    /// A surprise word and its spread: how many enabled dictionaries list it.
+    ///
+    /// Spread measures how established a word is. A word only one
+    /// dictionary lists is usually noise: an unabridged rarity, a key of
+    /// another language, or a typo. A word every dictionary lists is one
+    /// you already know. Each spread level gets a bell-shaped weight that
+    /// peaks in the middle. Within a level, every word has an equal chance,
+    /// whichever dictionary is biggest and however many homographs it has.
+    pub fn random_pick(&self) -> Option<(String, u32)> {
         let dicts = self.enabled_ready();
         let total: u64 = dicts.iter().map(|(_, l)| l.index.len() as u64).sum();
         if total == 0 {
             return None;
         }
-        for _ in 0..64 {
-            let r = self.next_rand() % total;
-            let mut acc = 0u64;
-            for (_, l) in &dicts {
-                let n = l.index.len() as u64;
-                if r < acc + n {
-                    let (w, _) = l.index.entry((r - acc) as usize)?;
-                    let ok = w.chars().count() >= 3
-                        && w.chars().count() <= 24
-                        && w.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '-')
-                        && w.chars().next().is_some_and(|c| c.is_lowercase());
-                    if ok {
-                        return Some(w.to_string());
-                    }
-                    break;
+        let mut st = self.surprise.lock().unwrap();
+        let gen = self.generation();
+        if st.gen != gen || st.accept.is_empty() {
+            st.accept = self.calibrate(&dicts, total);
+            st.gen = gen;
+        }
+        let peak = st.accept.iter().cloned().fold(0.0, f64::max);
+        if peak <= 0.0 {
+            return None;
+        }
+        for _ in 0..2 {
+            let mut fallback = None;
+            for _ in 0..MAX_DRAWS {
+                let Some(d) = self.draw(&dicts, total) else { continue };
+                let a = st.accept.get(d.spread as usize).copied().unwrap_or(0.0) / peak;
+                if a <= 0.0 || st.recent.contains(&d.word) {
+                    continue;
                 }
-                acc += n;
+                let keep = self.unit() < a * d.spread as f64 / d.entries as f64;
+                if !(keep || fallback.is_none()) || !self.fits(&dicts, &d) {
+                    continue;
+                }
+                if keep {
+                    st.remember(&d.word);
+                    return Some((d.word, d.spread));
+                }
+                fallback = Some((d.word, d.spread));
             }
+            if let Some((w, k)) = fallback {
+                st.remember(&w);
+                return Some((w, k));
+            }
+            // A library small enough to have been shown whole: start over.
+            st.recent.clear();
         }
         None
     }
 
+    /// Learns the library's spread curve from a uniform sample, then sets
+    /// each level's acceptance so the levels come out in proportion to
+    /// `bell` and every word within a level is equally likely.
+    fn calibrate(&self, dicts: &[(Arc<Dict>, Arc<Loaded>)], total: u64) -> Vec<f64> {
+        // mass[k]: the chance that a uniform entry draw lands on an eligible
+        // level-k word, with each word counted once (spread / entries).
+        let mut mass: Vec<f64> = Vec::new();
+        for _ in 0..CALIBRATION_DRAWS {
+            if let Some(d) = self.draw(dicts, total) {
+                let k = d.spread as usize;
+                if mass.len() <= k {
+                    mass.resize(k + 1, 0.0);
+                }
+                mass[k] += d.spread as f64 / d.entries as f64;
+            }
+        }
+        let widest = mass.len().saturating_sub(1);
+        // Single-source words are noise whenever enough words are shared.
+        let shared: f64 = mass.iter().skip(2).sum();
+        let all: f64 = mass.iter().sum();
+        let lowest = if shared >= MIN_SHARED * all { 2 } else { 1 };
+        mass.iter()
+            .enumerate()
+            .map(|(k, &m)| if k < lowest || m <= 0.0 { 0.0 } else { bell(k, widest) / m })
+            .collect()
+    }
+
+    /// A uniform (dictionary, entry) draw that passes the shape filters.
+    fn draw(&self, dicts: &[(Arc<Dict>, Arc<Loaded>)], total: u64) -> Option<Draw> {
+        let mut r = self.below(total);
+        let mut entry = None;
+        for (_, l) in dicts {
+            let n = l.index.len() as u64;
+            if r < n {
+                entry = l.index.entry(r as usize);
+                break;
+            }
+            r -= n;
+        }
+        let (w, _) = entry?;
+        if !word_shaped(w) {
+            return None;
+        }
+        let (spread, entries) = spread(dicts, &fold::index_key(w)?);
+        Some(Draw { word: w.to_string(), spread, entries })
+    }
+
+    /// The slower checks, run only on draws the sampler is about to keep.
+    fn fits(&self, dicts: &[(Arc<Dict>, Arc<Loaded>)], d: &Draw) -> bool {
+        // A name one dictionary happens to list in lowercase ("mary").
+        let Some(key) = fold::index_key(&d.word) else { return false };
+        let capitalized = dicts
+            .iter()
+            .filter_map(|(_, l)| l.index.get(&key).and_then(|g| l.index.entry(g.start)))
+            .filter(|(w, _)| w.chars().next().is_some_and(char::is_uppercase))
+            .count() as u32;
+        if 2 * capitalized >= d.spread {
+            return false;
+        }
+        // An inflection ("grapes", "radii") whose base form is far better
+        // established is the base form in disguise.
+        let k = d.spread;
+        if morph::english_lemmas(&fold::lower(&d.word))
+            .iter()
+            .filter_map(|lemma| fold::index_key(lemma))
+            .any(|lk| spread(dicts, &lk).0 >= k + (k / 2).max(2))
+        {
+            return false;
+        }
+        // A slur or an obscenity is no surprise anyone asked for.
+        !dicts.iter().any(|(_, l)| {
+            l.index.get(&key).is_some_and(|g| {
+                g.range().filter_map(|i| l.index.entry(i)).any(|(w, loc)| {
+                    l.reader.article(&l.index, w, loc).is_ok_and(|html| labelled_offensive(&html))
+                })
+            })
+        })
+    }
+
+    /// splitmix64: one atomic add per number, so concurrent callers never
+    /// share a draw.
     fn next_rand(&self) -> u64 {
-        // xorshift64*
-        let mut x = self.seed.load(Ordering::Relaxed);
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.seed.store(x, Ordering::Relaxed);
-        x.wrapping_mul(0x2545F4914F6CDD1D)
+        let mut z = self.seed.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in 0..n, without modulo bias.
+    fn below(&self, n: u64) -> u64 {
+        ((self.next_rand() as u128 * n as u128) >> 64) as u64
+    }
+
+    /// Uniform in [0, 1).
+    fn unit(&self) -> f64 {
+        (self.next_rand() >> 11) as f64 / (1u64 << 53) as f64
     }
 
     // ---------------------------------------------------------------- pages
@@ -715,9 +964,9 @@ impl Library {
     /// Serves `sgloss://<dict-id>/...` URLs: `/?e=1,2` articles, other paths resources.
     pub fn serve(&self, url: &str) -> Result<(Vec<u8>, String)> {
         let rest = url.strip_prefix("sgloss://").context("bad scheme")?;
+        let rest = rest.split('#').next().unwrap_or("");
         let (host, path_q) = rest.split_once('/').unwrap_or((rest, ""));
         let (path, query) = path_q.split_once('?').unwrap_or((path_q, ""));
-        let path = path.split('#').next().unwrap_or("");
         let host = host.to_ascii_lowercase();
         if path.is_empty() {
             let entries: Vec<usize> = query
@@ -742,6 +991,49 @@ impl Library {
             }
             None => bail!("not found: {decoded}"),
         }
+    }
+}
+
+/// "above_1" → "above": the word behind a numbered entry key.
+fn numbered_base(key: &str) -> Option<&str> {
+    let (base, n) = key.rsplit_once('_')?;
+    let base = base.trim();
+    (!base.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then_some(base)
+}
+
+/// Readable form of a link key for the search line: "above_1" → "above",
+/// "@topic_personal-qualities?level=c2" → "personal qualities · C2",
+/// "@ox3000&level=a1" → "Oxford 3000 · A1". Other keys are returned as they are.
+pub fn link_label(key: &str) -> String {
+    let Some(rest) = key.strip_prefix('@').filter(|r| !r.is_empty()) else {
+        return numbered_base(key).unwrap_or(key).to_string();
+    };
+    let mut parts = rest.split(['?', '&']);
+    let name = parts.next().unwrap_or("");
+    let segs: Vec<&str> = name.split('_').filter(|s| !s.is_empty()).collect();
+    let skip = usize::from(segs.len() > 1 && segs[0].eq_ignore_ascii_case("topic"));
+    let mut out: Vec<String> = vec![segs[skip..]
+        .iter()
+        .map(|s| match s.to_ascii_lowercase().as_str() {
+            "ox3000" => "Oxford 3000".to_string(),
+            "ox5000" => "Oxford 5000".to_string(),
+            "opal" => "OPAL".to_string(),
+            _ => s.replace('-', " "),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")];
+    for p in parts {
+        let v = p.split_once('=').map_or(p, |(_, v)| v).replace(['_', '-'], " ");
+        let v = if v.len() <= 2 { v.to_uppercase() } else { v };
+        if !v.trim().is_empty() {
+            out.push(v);
+        }
+    }
+    out.retain(|s| !s.is_empty());
+    if out.is_empty() {
+        key.to_string()
+    } else {
+        out.join(" · ")
     }
 }
 
@@ -937,6 +1229,45 @@ fn about_text(desc: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surprise_word_shape() {
+        for w in ["quotidian", "al fresco", "ne'er-do-well", "lovey-dovey", "slip of the tongue", "café"] {
+            assert!(word_shaped(w), "{w}");
+        }
+        for w in ["Mary", "above_1", "@topic_food", "tnt", "pd", "x", "AIDS", "3-D", "vouch for sth/sb", "anti-", "a  b"] {
+            assert!(!word_shaped(w), "{w}");
+        }
+    }
+
+    #[test]
+    fn surprise_bell_peaks_mid_spread() {
+        let w: Vec<f64> = (1..=15).map(|k| bell(k, 15)).collect();
+        let peak = (1..=15).max_by(|a, b| w[a - 1].total_cmp(&w[b - 1])).unwrap();
+        assert!((7..=9).contains(&peak));
+        assert!(w[1] < w[7] && w[14] < w[7]);
+        assert!(bell(1, 1) > 0.0 && bell(2, 2) > 0.0, "small libraries keep every level");
+    }
+
+    #[test]
+    fn offensive_labels() {
+        for h in [
+            "<sub><span class=\"c\">OFFENSIVE SLANG</span></sub> a woman",
+            "<span class=\"REGISTERLAB\">taboo</span>",
+            "<i><span>informal, derogatory</span></i> a spiteful person",
+            "<i>Offensive.</i>",
+        ] {
+            assert!(labelled_offensive(h), "{h}");
+        }
+        for h in [
+            "<span>an offensive or antagonistic movement</span>",
+            "<span class=\"x-ex\">The great military offensive had failed</span>",
+            "<span>informal</span> a nice word",
+            "<span>(slang, disapproving)</span>",
+        ] {
+            assert!(!labelled_offensive(h), "{h}");
+        }
+    }
     #[test]
     fn about() {
         assert_eq!(about_text("<style>.x{}</style><h1>Title</h1><p>Hello &amp; welcome</p>"), "Title\nHello & welcome");
@@ -950,5 +1281,18 @@ mod tests {
         assert!(starts_with_headword("<b>Kind and thoughtful</b>", "↑Kind and thoughtful"));
         assert!(starts_with_headword("—<b>run</b> UK", "run"));
         assert_eq!(osa_distance("recieve", "receive"), 1);
+    }
+
+    #[test]
+    fn link_labels() {
+        assert_eq!(link_label("above_1"), "above");
+        assert_eq!(link_label("look up_12"), "look up");
+        assert_eq!(link_label("@topic_personal-qualities?level=c2"), "personal qualities · C2");
+        assert_eq!(link_label("@ox3000&level=a1"), "Oxford 3000 · A1");
+        assert_eq!(link_label("@opal_written&level=sublist_3"), "OPAL written · sublist 3");
+        assert_eq!(link_label("abrupt"), "abrupt");
+        assert_eq!(link_label("_1"), "_1");
+        assert_eq!(link_label("snake_case"), "snake_case");
+        assert_eq!(link_label("@"), "@");
     }
 }

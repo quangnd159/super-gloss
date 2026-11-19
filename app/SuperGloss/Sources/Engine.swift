@@ -56,6 +56,16 @@ final class Engine: @unchecked Sendable {
             ?? LookupResult(word: word, via: nil, hits: [])
     }
 
+    func resolveLink(dict: String, target: String) -> ResolvedLink {
+        decode(ResolvedLink.self, dict.withCString { d in target.withCString { sg_resolve_link(lib, d, $0) } })
+            ?? ResolvedLink(word: target, label: target, anchor: nil)
+    }
+
+    /// Readable form of a word or link key for the search line ("above_1" → "above").
+    func label(_ word: String) -> String {
+        take(word.withCString { sg_link_label($0) }) ?? word
+    }
+
     func randomWord() -> String? {
         take(sg_random_word(lib))
     }
