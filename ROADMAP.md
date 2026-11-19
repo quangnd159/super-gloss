@@ -1,0 +1,12 @@
+# Roadmap
+
+Super Gloss stays minimal and should just work. Each item below has to fit that.
+
+## Next
+
+1. **Look up in place.** Select a word in any app, press the hotkey, and a small floating card answers right there without switching apps. This is the biggest upgrade.
+2. **Navigation polish.** ⌘← / ⌘→ and trackpad swipe for back and forward; Space / ⇧Space to page through results.
+3. **Search inside definitions.** For example, "words meaning *short-lived*" should find ephemeral, transient and fleeting. A full-text index alongside the headword FST.
+4. **Saved words.** Star a word to keep it in a quiet list. No account, no sync.
+5. **Lemmatizers beyond English** (French, German, Spanish, …), so "ran → run"-style matching works in every language.
+6. **Distribution.** A universal (Intel + Apple Silicon) build, a signed and notarized DMG, and automated UI tests for the hotkey and focus behavior.

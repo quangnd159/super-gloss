@@ -1,0 +1,69 @@
+name: SuperGloss
+options:
+  bundleIdPrefix: app.supergloss
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+  configs:
+    Debug:
+      ONLY_ACTIVE_ARCH: YES
+    Release:
+      ONLY_ACTIVE_ARCH: NO
+targets:
+  SuperGloss:
+    type: application
+    platform: macOS
+    sources:
+      - path: SuperGloss/Sources
+      - path: SuperGloss/AppIcon.icon
+        type: file
+        buildPhase: resources
+      - path: SuperGloss/Web
+        type: folder
+        buildPhase: resources
+    preBuildScripts:
+      - name: Build Rust core
+        basedOnDependencyAnalysis: false
+        script: |
+          # Builds the Rust core for every architecture Xcode is building and merges
+          # them into one static library (target/xcode/libsupergloss.a).
+          set -e
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET"
+          cd "$PROJECT_DIR/.."
+          libs=""
+          for arch in $ARCHS; do
+            case "$arch" in
+              arm64) triple=aarch64-apple-darwin ;;
+              x86_64) triple=x86_64-apple-darwin ;;
+              *) echo "error: unsupported architecture $arch"; exit 1 ;;
+            esac
+            cargo build --release -p supergloss-core --target "$triple"
+            libs="$libs target/$triple/release/libsupergloss.a"
+          done
+          mkdir -p target/xcode
+          lipo -create $libs -output target/xcode/libsupergloss.a
+    settings:
+      base:
+        PRODUCT_NAME: Super Gloss
+        PRODUCT_MODULE_NAME: SuperGloss
+        PRODUCT_BUNDLE_IDENTIFIER: app.supergloss.SuperGloss
+        INFOPLIST_FILE: SuperGloss/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: SuperGloss/Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(PROJECT_DIR)/../core/include
+        LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/../target/xcode
+        OTHER_LDFLAGS: -lsupergloss
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        COMBINE_HIDPI_IMAGES: YES
+        GENERATE_INFOPLIST_FILE: NO
+        DEAD_CODE_STRIPPING: YES
+        SWIFT_STRICT_CONCURRENCY: complete

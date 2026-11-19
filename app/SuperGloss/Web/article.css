@@ -1,0 +1,129 @@
+/* Article frame base. Native formats (DSL, StarDict, dictd, XDXF) get the full
+   Super Gloss typography; foreign formats (MDict, Babylon) keep their own design. */
+:root {
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --soft: #8a8a8e;
+  --rule: rgba(0, 0, 0, 0.08);
+  --accent: #c4471b;
+  --accent-soft: rgba(196, 71, 27, 0.35);
+  --c-default: #2f7d4f;
+}
+html, body {
+  margin: 0 !important;
+  padding: 0;
+  height: auto !important;
+  min-height: 0 !important;
+  overflow-y: hidden !important;
+}
+body { overflow-x: auto; padding-bottom: 2px; }
+
+/* ---------- native typography ---------- */
+:root:has(body.sg-native) { color-scheme: light dark; }
+body.sg-native {
+  color: var(--ink);
+  background: transparent;
+  font: 17px/1.58 "New York", ui-serif, Georgia, serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern", "liga";
+  overflow-wrap: break-word;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ececec;
+    --muted: #a1a1a6;
+    --soft: #8e8e93;
+    --rule: rgba(255, 255, 255, 0.1);
+    --accent: #ff8a5c;
+    --accent-soft: rgba(255, 138, 92, 0.4);
+    --c-default: #6fcf97;
+  }
+}
+
+.sg-hw {
+  font: 600 1.65em/1.15 "New York", ui-serif, Georgia, serif;
+  letter-spacing: -0.012em;
+  margin: 0 0 0.3em;
+}
+.sg-sep { border: 0; border-top: 1px solid var(--rule); margin: 1.5em 0 1.3em; }
+.sg-error { color: var(--muted); font: italic 14px -apple-system, sans-serif; }
+
+.sg-native a { color: inherit; text-decoration: underline; text-decoration-color: var(--accent-soft);
+  text-decoration-thickness: 1px; text-underline-offset: 2.5px; }
+.sg-native a:hover { color: var(--accent); text-decoration-color: var(--accent); }
+
+.sg-img { display: block; max-width: min(100%, 420px); max-height: 340px; height: auto; margin: 0.6em 0; border-radius: 6px; }
+
+a.sg-snd {
+  display: inline-block;
+  width: 1.05em; height: 1.05em;
+  vertical-align: -0.16em;
+  margin: 0 0.18em;
+  background: var(--accent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M3 7.5h3l4.5-4v13L6 12.5H3z'/%3E%3Cpath d='M13.2 6.3a5 5 0 0 1 0 7.4M15.6 4a8.3 8.3 0 0 1 0 12' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M3 7.5h3l4.5-4v13L6 12.5H3z'/%3E%3Cpath d='M13.2 6.3a5 5 0 0 1 0 7.4M15.6 4a8.3 8.3 0 0 1 0 12' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  text-decoration: none !important;
+  cursor: pointer;
+  opacity: 0.85;
+}
+a.sg-snd:hover { opacity: 1; }
+a.sg-snd:active { transform: scale(0.92); }
+
+/* colors from source markup adapt to the theme */
+.c { color: var(--c, var(--c-default)); }
+@media (prefers-color-scheme: dark) {
+  .c { color: color-mix(in oklab, var(--c, var(--c-default)) 62%, white); }
+}
+
+/* DSL */
+.m { padding-left: 0; margin: 0.08em 0; }
+.m1 { padding-left: 1.1em; } .m2 { padding-left: 2.2em; } .m3 { padding-left: 3.3em; }
+.m4 { padding-left: 4.4em; } .m5 { padding-left: 5.5em; } .m6 { padding-left: 6.6em; }
+.m7 { padding-left: 7.7em; } .m8 { padding-left: 8.8em; } .m9 { padding-left: 9.9em; }
+.dsl-ex { color: var(--muted); font-style: italic; }
+.dsl-com { color: var(--muted); }
+.dsl-sec { color: var(--muted); }
+.dsl-t, .x-tr, .sd-t, .bgl-tr {
+  font-family: -apple-system, "SF Pro Text", "Lucida Grande", sans-serif;
+  font-size: 0.88em;
+  color: var(--muted);
+}
+abbr.dsl-p .c, abbr.dsl-p .dsl-trn { color: inherit; }
+abbr.dsl-p, abbr.x-abr {
+  color: var(--accent);
+  font: italic 0.9em/1 "New York", ui-serif, serif;
+  text-decoration: none;
+  cursor: help;
+}
+.dsl-sub {
+  margin: 1em 0 0.25em;
+  font-weight: 600;
+  font-size: 1.04em;
+}
+.dsl-stress { }
+
+/* XDXF / StarDict */
+.x-bq { margin-left: 1.1em; }
+.x-ex { color: var(--muted); font-style: italic; }
+.x-co { color: var(--muted); }
+.x-opt { color: var(--soft); }
+.x-big { font-size: 1.15em; }
+.x-dtrn { }
+.sd-m { white-space: pre-wrap; }
+
+/* dictd */
+.dictd { white-space: pre-wrap; font: 13.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* Babylon part of speech */
+.bgl-pos { color: var(--accent); font-style: italic; }
+
+/* ---------- foreign: keep the dictionary's design, invert in dark mode ---------- */
+body.sg-foreign { -webkit-font-smoothing: antialiased; }
+@media (prefers-color-scheme: dark) {
+  html:has(> body.sg-foreign) { background: #fff; filter: invert(0.882) hue-rotate(180deg); }
+  body.sg-foreign img, body.sg-foreign video, body.sg-foreign picture, body.sg-foreign canvas,
+  body.sg-foreign svg image, body.sg-foreign [style*="background-image"] {
+    filter: invert(1) hue-rotate(180deg);
+  }
+}

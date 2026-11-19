@@ -1,0 +1,393 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1B67BC6DB1AC948AF9B41D3F /* SuperGlossApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B049D45ADB627DCC68B5115 /* SuperGlossApp.swift */; };
+		4225F249FFB11CD795785E86 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A8871BABC101E5208831752 /* SettingsView.swift */; };
+		625A704025ACAC0D7F823D6B /* System.swift in Sources */ = {isa = PBXBuildFile; fileRef = 867D86E8748C5FFD88958566 /* System.swift */; };
+		629EFC66520B19B0C2EC1DCA /* ArticleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46BA7A4041C5F5972C71961A /* ArticleView.swift */; };
+		69606D3D396B030CC5139915 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D03EE20DABE08D8B971D5764 /* MainView.swift */; };
+		97617552305B8F2A573B1A6B /* Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F56641711E5A3BB3AD42714 /* Engine.swift */; };
+		9CBB0B905C1D22990435B61B /* ShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 435717465F03B93179867D3C /* ShortcutsView.swift */; };
+		B2CBCECF45468B3CC4125102 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B282A9FF851F641C0A8287F6 /* AppModel.swift */; };
+		D06DC4761DAA20B05415A26F /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 1623A967FC39F8359AADF004 /* AppIcon.icon */; };
+		E2A296F9A54F4799B6CC4C2B /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8D3D12FC8AC90D7302DE597 /* Models.swift */; };
+		EDCB2B05C379F0139CF9C501 /* Web in Resources */ = {isa = PBXBuildFile; fileRef = AAD045282932FCD901920DCC /* Web */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0A8871BABC101E5208831752 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		0F56641711E5A3BB3AD42714 /* Engine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine.swift; sourceTree = "<group>"; };
+		1623A967FC39F8359AADF004 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		435717465F03B93179867D3C /* ShortcutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsView.swift; sourceTree = "<group>"; };
+		46BA7A4041C5F5972C71961A /* ArticleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArticleView.swift; sourceTree = "<group>"; };
+		5481966A540CA52999BEB575 /* SuperGloss.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SuperGloss.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		867D86E8748C5FFD88958566 /* System.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = System.swift; sourceTree = "<group>"; };
+		9B049D45ADB627DCC68B5115 /* SuperGlossApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SuperGlossApp.swift; sourceTree = "<group>"; };
+		AAD045282932FCD901920DCC /* Web */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Web; path = SuperGloss/Web; sourceTree = SOURCE_ROOT; };
+		B282A9FF851F641C0A8287F6 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		D03EE20DABE08D8B971D5764 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		F8D3D12FC8AC90D7302DE597 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		2C5F4BFC6591604CAA80E91C /* SuperGloss */ = {
+			isa = PBXGroup;
+			children = (
+				1623A967FC39F8359AADF004 /* AppIcon.icon */,
+				AAD045282932FCD901920DCC /* Web */,
+				72CE9FEC906F3A745265E15E /* Sources */,
+			);
+			path = SuperGloss;
+			sourceTree = "<group>";
+		};
+		3270FA2F36F2B4C092EDB4A1 = {
+			isa = PBXGroup;
+			children = (
+				2C5F4BFC6591604CAA80E91C /* SuperGloss */,
+				FD60DD3937021AC5E8351923 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		72CE9FEC906F3A745265E15E /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				B282A9FF851F641C0A8287F6 /* AppModel.swift */,
+				46BA7A4041C5F5972C71961A /* ArticleView.swift */,
+				0F56641711E5A3BB3AD42714 /* Engine.swift */,
+				D03EE20DABE08D8B971D5764 /* MainView.swift */,
+				F8D3D12FC8AC90D7302DE597 /* Models.swift */,
+				0A8871BABC101E5208831752 /* SettingsView.swift */,
+				435717465F03B93179867D3C /* ShortcutsView.swift */,
+				9B049D45ADB627DCC68B5115 /* SuperGlossApp.swift */,
+				867D86E8748C5FFD88958566 /* System.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		FD60DD3937021AC5E8351923 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5481966A540CA52999BEB575 /* SuperGloss.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8EE819C0D6E90024C4D9A7E1 /* SuperGloss */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A4C019717671F634B44FC6B0 /* Build configuration list for PBXNativeTarget "SuperGloss" */;
+			buildPhases = (
+				4CBD2043226C6514BB7CC5AD /* Build Rust core */,
+				FDBACFB56EA8076C7D6C3438 /* Sources */,
+				45821C5D9E8672C8C1DD8E4C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SuperGloss;
+			packageProductDependencies = (
+			);
+			productName = SuperGloss;
+			productReference = 5481966A540CA52999BEB575 /* SuperGloss.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		06996D891A361B3B8850C706 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					8EE819C0D6E90024C4D9A7E1 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = FC32C0A73B34DFA0C9AE23C4 /* Build configuration list for PBXProject "SuperGloss" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 3270FA2F36F2B4C092EDB4A1;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FD60DD3937021AC5E8351923 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8EE819C0D6E90024C4D9A7E1 /* SuperGloss */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		45821C5D9E8672C8C1DD8E4C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D06DC4761DAA20B05415A26F /* AppIcon.icon in Resources */,
+				EDCB2B05C379F0139CF9C501 /* Web in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		4CBD2043226C6514BB7CC5AD /* Build Rust core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Builds the Rust core for every architecture Xcode is building and merges\n# them into one static library (target/xcode/libsupergloss.a).\nset -e\nexport PATH=\"$HOME/.cargo/bin:$PATH\"\nexport MACOSX_DEPLOYMENT_TARGET=\"$MACOSX_DEPLOYMENT_TARGET\"\ncd \"$PROJECT_DIR/..\"\nlibs=\"\"\nfor arch in $ARCHS; do\n  case \"$arch\" in\n    arm64) triple=aarch64-apple-darwin ;;\n    x86_64) triple=x86_64-apple-darwin ;;\n    *) echo \"error: unsupported architecture $arch\"; exit 1 ;;\n  esac\n  cargo build --release -p supergloss-core --target \"$triple\"\n  libs=\"$libs target/$triple/release/libsupergloss.a\"\ndone\nmkdir -p target/xcode\nlipo -create $libs -output target/xcode/libsupergloss.a\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FDBACFB56EA8076C7D6C3438 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B2CBCECF45468B3CC4125102 /* AppModel.swift in Sources */,
+				629EFC66520B19B0C2EC1DCA /* ArticleView.swift in Sources */,
+				97617552305B8F2A573B1A6B /* Engine.swift in Sources */,
+				69606D3D396B030CC5139915 /* MainView.swift in Sources */,
+				E2A296F9A54F4799B6CC4C2B /* Models.swift in Sources */,
+				4225F249FFB11CD795785E86 /* SettingsView.swift in Sources */,
+				9CBB0B905C1D22990435B61B /* ShortcutsView.swift in Sources */,
+				1B67BC6DB1AC948AF9B41D3F /* SuperGlossApp.swift in Sources */,
+				625A704025ACAC0D7F823D6B /* System.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0114053025FBFFE3DB157E79 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		041FF8AE8B060A72BC8521DF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/../core/include";
+				INFOPLIST_FILE = SuperGloss/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../target/xcode";
+				OTHER_LDFLAGS = "-lsupergloss";
+				PRODUCT_BUNDLE_IDENTIFIER = app.supergloss.SuperGloss;
+				PRODUCT_MODULE_NAME = SuperGloss;
+				PRODUCT_NAME = "Super Gloss";
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "SuperGloss/Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Release;
+		};
+		07F0919C4902BBE3F18A6F77 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		9FDE2FE1AEF0AB8C9C14D4B5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/../core/include";
+				INFOPLIST_FILE = SuperGloss/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../target/xcode";
+				OTHER_LDFLAGS = "-lsupergloss";
+				PRODUCT_BUNDLE_IDENTIFIER = app.supergloss.SuperGloss;
+				PRODUCT_MODULE_NAME = SuperGloss;
+				PRODUCT_NAME = "Super Gloss";
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "SuperGloss/Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A4C019717671F634B44FC6B0 /* Build configuration list for PBXNativeTarget "SuperGloss" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9FDE2FE1AEF0AB8C9C14D4B5 /* Debug */,
+				041FF8AE8B060A72BC8521DF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FC32C0A73B34DFA0C9AE23C4 /* Build configuration list for PBXProject "SuperGloss" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0114053025FBFFE3DB157E79 /* Debug */,
+				07F0919C4902BBE3F18A6F77 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 06996D891A361B3B8850C706 /* Project object */;
+}

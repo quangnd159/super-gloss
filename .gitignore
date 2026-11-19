@@ -1,0 +1,6 @@
+/target/
+/app/build/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+/dist/
