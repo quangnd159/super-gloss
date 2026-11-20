@@ -3,18 +3,21 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
-/// Layout shared with app.css: a gloss column (140) + gap (28) + reading column (≤700),
-/// centred, collapsing to a single column under 760 pt.
+/// Layout shared with app.css. From 1100 pt the page has a margin (140, where it lists
+/// its dictionaries) + gap (28) + reading column (≤700), centred together; narrower, the
+/// reading column is centred alone, and at 760 pt or less it fills the window.
 enum Column {
     static let gloss: CGFloat = 140
     static let gap: CGFloat = 28
     static let reading: CGFloat = 700
     static let margin: CGFloat = 28
+    /// The narrowest window with room for the margin.
+    static let withMargin: CGFloat = 1100
 
     static func leading(for width: CGFloat) -> CGFloat {
         if width <= 760 { return 18 }
-        let total = gloss + gap + reading
-        return max(margin, (width - total) / 2) + gloss + gap
+        if width < withMargin { return max(margin, (width - reading) / 2) }
+        return max(margin, (width - gloss - gap - reading) / 2) + gloss + gap
     }
 }
 
@@ -36,6 +39,7 @@ struct MainView: View {
     @Bindable var model: AppModel
     @FocusState private var fieldFocused: Bool
     @FocusState private var findFocused: Bool
+    @FocusState private var indexFocused: Bool
     @Environment(\.openWindow) private var openWindow
     @State private var dropTargeted = false
     @State private var headerHover = false
@@ -64,6 +68,7 @@ struct MainView: View {
             .overlay(alignment: .top) { IndexingLine(progress: model.indexingProgress) }
             .overlay(alignment: .topTrailing) { navButtons.padding(.top, 9).padding(.trailing, 14) }
             .overlay { if dropTargeted { DropTarget() } }
+            .overlay(alignment: .bottomTrailing) { UpdatePill(updater: .shared) }
         }
         .background(Color.paper)
         .ignoresSafeArea()
@@ -78,7 +83,7 @@ struct MainView: View {
             // unless the reader was working inside an article.
             guard let w = note.object as? NSWindow, w.identifier?.rawValue.hasPrefix("main") == true else { return }
             if w.firstResponder is WKWebView { return }
-            if model.finding { findFocused = true } else { fieldFocused = true }
+            if model.finding { findFocused = true } else if model.indexing { indexFocused = true } else { fieldFocused = true }
         }
         .onChange(of: model.focusTick) {
             fieldFocused = true
@@ -87,6 +92,17 @@ struct MainView: View {
                     NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
                 }
             }
+        }
+        .onChange(of: model.indexFocusTick) {
+            indexFocused = true
+            // A key typed in the article continues what is in the line.
+            DispatchQueue.main.async {
+                NSApp.sendAction(#selector(NSResponder.moveToEndOfDocument(_:)), to: nil, from: nil)
+            }
+        }
+        // Going back to the search line keeps the place the list is showing.
+        .onChange(of: fieldFocused) {
+            if fieldFocused && model.indexing { model.endIndex(.stay, refocus: false) }
         }
         .onChange(of: model.findFocusTick) {
             findFocused = true
@@ -116,11 +132,13 @@ struct MainView: View {
                         .offset(x: -(Column.gap + SavedMark.width))
                 }
             }
-            // The find line takes the related words' place, at the same height.
+            // The find and index lines take the related words' place, at the same height.
             ZStack(alignment: .leading) {
                 if model.finding {
                     FindLine(model: model, focused: $findFocused)
                         .transition(.opacity.combined(with: .offset(y: 3)))
+                } else if model.indexing {
+                    IndexLine(model: model, focused: $indexFocused)
                 } else {
                     WordStrip(model: model)
                         .transition(.opacity)
@@ -129,6 +147,7 @@ struct MainView: View {
             .frame(height: 24)
             .opacity(model.query.isEmpty ? 0 : 1)
             .animation(.easeOut(duration: 0.14), value: model.finding)
+            .animation(nil, value: model.indexing)
         }
         .padding(.leading, lead)
         .padding(.trailing, Column.margin)
@@ -183,12 +202,13 @@ struct SearchField: View {
                 .focused(focused)
                 .autocorrectionDisabled()
                 .onSubmit { model.submit() }
+                // ↑↓ go between dictionaries, the most frequent move; ⌥↑↓ along the related words.
                 .onKeyPress(keys: [.downArrow, .upArrow], phases: [.down, .repeat]) { press in
                     let d = press.key == .downArrow ? 1 : -1
                     if press.modifiers.contains(.option) {
-                        model.article?.jump(d)
-                    } else {
                         model.moveSelection(d)
+                    } else {
+                        model.article?.jump(d)
                     }
                     return .handled
                 }
@@ -314,39 +334,15 @@ struct FindLine: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Color.ink)
-            // The field is exactly as wide as its text, so the count reads as part of the line.
-            Text(model.findQuery.isEmpty ? Self.prompt : model.findQuery)
-                .lineLimit(1)
-                .padding(.trailing, 3)
-                .hidden()
-                .frame(minWidth: 24, maxWidth: 380, alignment: .leading)
-                .fixedSize(horizontal: true, vertical: false)
-                .overlay(alignment: .leading) {
-                    TextField("", text: $model.findQuery, prompt: Text(Self.prompt).foregroundStyle(.tertiary))
-                        .textFieldStyle(.plain)
-                        .focused(focused)
-                        .autocorrectionDisabled()
-                        .onKeyPress(.return, phases: [.down, .repeat]) { press in
-                            model.findStep(press.modifiers.contains(.shift) ? -1 : 1)
-                            return .handled
-                        }
-                        .onKeyPress(keys: [.downArrow, .upArrow], phases: [.down, .repeat]) { press in
-                            model.findStep(press.key == .downArrow ? 1 : -1)
-                            return .handled
-                        }
-                        .onKeyPress(.escape) {
-                            model.endFind()
-                            return .handled
-                        }
-                        .accessibilityLabel("Find in these entries")
+            FittedField(text: $model.findQuery, prompt: Self.prompt, focused: focused) { press in
+                switch press.key {
+                case .return: model.findStep(press.modifiers.contains(.shift) ? -1 : 1)
+                case .downArrow, .upArrow: model.findStep(press.key == .downArrow ? 1 : -1)
+                case .tab: model.findStep(press.modifiers.contains(.shift) ? -1 : 1)
+                default: if press.phase == .down { model.endFind() }
                 }
-                .overlay(alignment: .bottom) {
-                    Capsule()
-                        .fill(Color.ink)
-                        .frame(height: 2)
-                        .offset(y: 4)
-                        .opacity(model.findQuery.isEmpty ? 0.3 : 1)
-                }
+                return .handled
+            }
             status
                 .padding(.leading, 6)
             Spacer(minLength: 8)
@@ -369,6 +365,83 @@ struct FindLine: View {
             Text("\(model.findIndex) of \(model.findTotal)").foregroundStyle(.tertiary).monospacedDigit()
         } else {
             Text("\(model.findTotal) \(model.findTotal == 1 ? "match" : "matches")").foregroundStyle(.tertiary).monospacedDigit()
+        }
+    }
+}
+
+/// A plain field exactly as wide as its text, so what follows reads as part of the
+/// line, underlined like the strip's current word. Takes Return, ↑↓, Tab and Esc.
+struct FittedField: View {
+    @Binding var text: String
+    let prompt: String
+    var focused: FocusState<Bool>.Binding
+    let onKey: (KeyPress) -> KeyPress.Result
+
+    var body: some View {
+        Text(text.isEmpty ? prompt : text)
+            .lineLimit(1)
+            .padding(.trailing, 3)
+            .hidden()
+            .frame(minWidth: 24, maxWidth: 380, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: false)
+            .overlay(alignment: .leading) {
+                TextField("", text: $text, prompt: Text(prompt).foregroundStyle(.tertiary))
+                    .textFieldStyle(.plain)
+                    .focused(focused)
+                    .autocorrectionDisabled()
+                    .onKeyPress(keys: [.return, .downArrow, .upArrow, .escape, .tab], phases: [.down, .repeat], action: onKey)
+                    .accessibilityLabel(prompt)
+            }
+            .overlay(alignment: .bottom) {
+                Capsule()
+                    .fill(Color.ink)
+                    .frame(height: 2)
+                    .offset(y: 4)
+                    .opacity(text.isEmpty ? 0.3 : 1)
+            }
+    }
+}
+
+// MARK: - Index line
+
+/// Going to a dictionary (⌘J). The page lists every dictionary in the margin; this
+/// line takes the typing that narrows it and names the one selected, in full.
+struct IndexLine: View {
+    @Bindable var model: AppModel
+    var focused: FocusState<Bool>.Binding
+
+    private static let prompt = "Go to a dictionary"
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "books.vertical")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.ink)
+            FittedField(text: $model.indexQuery, prompt: Self.prompt, focused: focused) { press in
+                switch press.key {
+                case .downArrow, .upArrow: model.indexMove(press.key == .downArrow ? 1 : -1)
+                case .tab: model.indexMove(press.modifiers.contains(.shift) ? -1 : 1)
+                case .return: if press.phase == .down { model.endIndex(.pick) }
+                default: if press.phase == .down { model.endIndex(.back) }
+                }
+                return .handled
+            }
+            status
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.leading, 6)
+            Spacer(minLength: 8)
+        }
+        .font(.system(size: 13.5))
+        .padding(.vertical, 3)
+    }
+
+    /// Silent while the list says it all; speaks when the dictionary isn't there.
+    @ViewBuilder private var status: some View {
+        if model.indexTotal == 1 {
+            Text("Only in \(model.indexName)").foregroundStyle(.secondary)
+        } else if !model.indexQuery.isEmpty && model.indexMatches == 0 {
+            Text("Not among the \(model.indexTotal) dictionaries for this word").foregroundStyle(.secondary)
         }
     }
 }

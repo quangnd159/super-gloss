@@ -99,7 +99,7 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
                 "count": h.entries.count,
             ]
         }
-        var payload: [String: Any] = ["word": result.word, "hits": hits]
+        var payload: [String: Any] = ["word": result.word, "hits": hits, "icons": model.showIcons]
         if let via = result.via { payload["via"] = via }
         switch landing {
         case let .anchor(dict, id, find):
@@ -119,15 +119,24 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
     func page(_ direction: Int) { run("sg.page(\(direction))") }
     func pronounce() { run("sg.pronounce() || null") }
     func setZoom(_ zoom: Double) { web?.pageZoom = zoom }
+    func setIcons(_ on: Bool) { run("sg.icons(\(on))") }
 
-    func find(_ query: String) {
-        guard let data = try? JSONSerialization.data(withJSONObject: [query]),
-              let json = String(data: data, encoding: .utf8) else { return }
-        run("sg.find(\(json)[0])")
-    }
+    func find(_ query: String) { run("sg.find(\(Self.literal(query)))") }
 
     func findStep(_ direction: Int) { run("sg.findStep(\(direction))") }
     func prepareFind() { run("sg.prepareFind()") }
+
+    func indexOpen() { run("sg.indexOpen()") }
+    func indexQuery(_ query: String) { run("sg.indexQuery(\(Self.literal(query)))") }
+    func indexMove(_ direction: Int) { run("sg.indexMove(\(direction))") }
+    func indexClose(_ exit: IndexExit) { run("sg.indexClose('\(exit.rawValue)')") }
+
+    /// A string (or null) as a JavaScript literal.
+    private static func literal(_ s: String?) -> String {
+        guard let s, let data = try? JSONSerialization.data(withJSONObject: [s]),
+              let json = String(data: data, encoding: .utf8) else { return "null" }
+        return "\(json)[0]"
+    }
 
     private func run(_ js: String) {
         guard loaded else {
@@ -171,6 +180,9 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
             }
         case "key":
             if let k = body["key"] as? String { model.typed(k) }
+        case "index":
+            model.noteIndex(open: body["open"] as? Bool ?? false, name: body["name"] as? String ?? "",
+                            matches: body["matches"] as? Int ?? 0, total: body["total"] as? Int ?? 0)
         default:
             break
         }

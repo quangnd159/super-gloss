@@ -134,23 +134,21 @@ struct GeneralPane: View {
     @State private var hotKey: HotKeyPreset = AppModel.shared.prefs.hotKey
     @State private var zoom: Double = AppModel.shared.prefs.zoom
     @State private var appearance: AppearanceMode = AppModel.shared.prefs.appearance
+    @State private var showIcons: Bool = AppModel.shared.prefs.showIcons
+    @State private var checksForUpdates: Bool = AppModel.shared.prefs.checksForUpdates
 
     var body: some View {
         Form {
             Section {
-                Picker("Summon from anywhere", selection: $hotKey) {
+                Picker("Super Gloss Hotkey", selection: $hotKey) {
                     ForEach(HotKeyPreset.allCases) { Text($0.label).tag($0) }
                 }
                 .onChange(of: hotKey) {
                     model.prefs.hotKey = hotKey
                     HotKey.shared.register(hotKey)
                 }
-                Text("Press it again to hide. Select text in any app and choose **Services → Look Up in Super Gloss** to look it up directly.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Keyboard Shortcuts…") { openWindow(id: "shortcuts") }
+                LabeledContent("Keyboard shortcuts") {
+                    Button("Show All…") { openWindow(id: "shortcuts") }
                 }
             }
             Section {
@@ -161,6 +159,8 @@ struct GeneralPane: View {
                     model.prefs.appearance = appearance
                     appearance.apply()
                 }
+                Toggle("Show dictionary icons", isOn: $showIcons)
+                    .onChange(of: showIcons) { model.showIcons = showIcons }
                 LabeledContent("Text size") {
                     HStack {
                         Image(systemName: "textformat.size.smaller")
@@ -171,6 +171,14 @@ struct GeneralPane: View {
                 }
             }
             Section {
+                Toggle("Update automatically", isOn: $checksForUpdates)
+                    .onChange(of: checksForUpdates) {
+                        model.prefs.checksForUpdates = checksForUpdates
+                        Updater.shared.scheduleChecks()
+                    }
+                LabeledContent("Version \(Updater.shared.version)") { UpdateStatus(updater: .shared) }
+            }
+            Section {
                 LabeledContent("History") {
                     Button("Clear Recent Words") { model.clearHistory() }
                         .disabled(model.history.isEmpty)
@@ -178,5 +186,40 @@ struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Settings' line for updates: what the updater is doing, said beside the button that asked.
+private struct UpdateStatus: View {
+    let updater: Updater
+
+    var body: some View {
+        HStack(spacing: 8) {
+            switch updater.phase {
+            case .checking:
+                ProgressView().controlSize(.small)
+                Text("Checking…").foregroundStyle(.secondary)
+            case let .downloading(v):
+                ProgressView().controlSize(.small)
+                Text("Downloading \(v)…").foregroundStyle(.secondary)
+            case .current:
+                Text("Up to date").foregroundStyle(.secondary)
+            case let .failed(message):
+                Text(message).foregroundStyle(.secondary)
+            case let .available(v, page):
+                Text("\(v) is out").foregroundStyle(.secondary)
+                Button("Download…") { NSWorkspace.shared.open(page) }
+            default:
+                EmptyView()
+            }
+            if case let .ready(v) = updater.phase {
+                Text("\(v) is ready").foregroundStyle(.secondary)
+                Button("Relaunch to Update") { updater.relaunch() }
+            } else if !updater.phase.isAvailable {
+                Button("Check Now") { updater.check(userInitiated: true, inPill: false) }
+                    .disabled(updater.phase == .checking || updater.phase.isDownloading)
+            }
+        }
+        .lineLimit(1)
     }
 }

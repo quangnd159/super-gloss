@@ -121,6 +121,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { AppModel.shared.article?.jump(code == 125 ? 1 : -1) }
             return nil
         }
+        Updater.shared.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Updater.shared.appWillTerminate()
     }
 
     private var keyMonitor: Any?
@@ -189,6 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        Updater.shared.appBecameActive()
         if Self.pendingPresent {
             Self.pendingPresent = false
             Self.presentMain()

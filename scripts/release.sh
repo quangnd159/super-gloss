@@ -1,5 +1,7 @@
 #!/bin/zsh
-# Builds a signed, notarized Super Gloss DMG in dist/.
+# Builds a signed, notarized Super Gloss DMG in dist/, and the same app zipped: the zip is
+# what the app's updater downloads, so attach both to the GitHub release:
+#   gh release create v<version> dist/SuperGloss-<version>.dmg dist/SuperGloss-<version>.zip
 #
 # Signing uses the first "Developer ID Application" identity in your keychain
 # (override with SIGN_IDENTITY). Notarization uses either
@@ -17,6 +19,7 @@ version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" app/Sup
 app="$root/app/build/DerivedData/Build/Products/Release/Super Gloss.app"
 dist="$root/dist"
 dmg="$dist/SuperGloss-$version.dmg"
+zip="$dist/SuperGloss-$version.zip"
 
 echo "==> Building $version"
 ./build.sh Release
@@ -35,8 +38,12 @@ rm -f "$dmg"
 hdiutil create -volname "Super Gloss" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" >/dev/null
 codesign --force --timestamp --sign "$identity" "$dmg"
 
+# The same signed app; notarizing the disk image covers it too (same code).
+rm -f "$zip"
+ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+
 if [[ -n "${SKIP_NOTARIZE:-}" ]]; then
-  echo "Signed (not notarized): $dmg"
+  echo "Signed (not notarized): $dmg, $zip"
   exit 0
 fi
 
@@ -53,5 +60,5 @@ xcrun stapler staple "$dmg"
 xcrun stapler validate "$dmg"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 
-shasum -a 256 "$dmg"
-echo "Released: $dmg"
+shasum -a 256 "$dmg" "$zip"
+echo "Released: $dmg, $zip"

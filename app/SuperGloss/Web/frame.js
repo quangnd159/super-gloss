@@ -328,10 +328,22 @@
     if (sel && sel.length <= 48 && sel.split(/\s+/).length <= 3) post({ type: 'lookup', word: sel });
   });
 
+  // A press anywhere in an article: the page closes what floats over it.
+  document.addEventListener('mousedown', (e) => {
+    if (e.button === 0) post({ type: 'press' });
+  }, true);
+
   // Typing while an article has focus goes back to the search field (or the find
-  // line, which also takes Return and ⇧Return to step through matches).
+  // line, which also takes Return and ⇧Return to step through matches). The arrows
+  // keep their meaning there: ↑↓ between dictionaries, ⌥↑↓ along the related words.
   document.addEventListener('keydown', (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.metaKey || e.ctrlKey) return;
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.shiftKey) {
+      post({ type: 'key', key: (e.altKey ? 'Alt' : '') + e.key });
+      e.preventDefault();
+      return;
+    }
+    if (e.altKey) return;
     if (e.key.length === 1 || e.key === 'Escape' || e.key === 'Enter') {
       post({ type: 'key', key: e.key === 'Enter' && e.shiftKey ? 'ShiftEnter' : e.key });
       e.preventDefault();

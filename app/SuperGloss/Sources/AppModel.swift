@@ -9,9 +9,26 @@ protocol ArticleController: AnyObject {
     func page(_ direction: Int)
     func pronounce()
     func setZoom(_ zoom: Double)
+    func setIcons(_ on: Bool)
     func find(_ query: String)
     func findStep(_ direction: Int)
     func prepareFind()
+    /// Opens the list of the page's dictionaries, selecting the one being read.
+    func indexOpen()
+    /// Brings dictionary `dict`'s entry to the top, showing it if it was hidden.
+    func indexQuery(_ query: String)
+    func indexMove(_ direction: Int)
+    func indexClose(_ exit: IndexExit)
+}
+
+/// How the list of the page's dictionaries closes.
+enum IndexExit: String {
+    /// Return or a click: keep the place, showing the dictionary if it was hidden.
+    case pick
+    /// Closed by something else (⌘J again, the search line, find): keep the place.
+    case stay
+    /// Esc: return to where the reader was.
+    case back
 }
 
 @MainActor @Observable
@@ -60,6 +77,21 @@ final class AppModel {
     private(set) var findFocusTick = 0
     private(set) var findSelectAll = false
 
+    // MARK: going to a dictionary
+
+    /// The list of the page's dictionaries is open, with its line under the word.
+    private(set) var indexing = false
+    var indexQuery = "" {
+        didSet { if indexing && indexQuery != oldValue { article?.indexQuery(indexQuery) } }
+    }
+    /// The selected dictionary's name, as the margin shows it.
+    private(set) var indexName = ""
+    /// How many dictionaries the typing matches, of how many answered the word.
+    private(set) var indexMatches = 0
+    private(set) var indexTotal = 0
+    /// Incremented to ask the line's field to take focus.
+    private(set) var indexFocusTick = 0
+
     // MARK: saved words
 
     /// Saved words and link keys, newest first.
@@ -94,6 +126,7 @@ final class AppModel {
     @ObservationIgnored private var poller: Timer?
     @ObservationIgnored private var lastGeneration: UInt64 = 0
     @ObservationIgnored private var lastReadyIDs: Set<String> = []
+    @ObservationIgnored private var pendingResume: Visit?
 
     private init() {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -164,6 +197,7 @@ final class AppModel {
         lastGeneration = g
         refreshDictionaries()
         if busy.isEmpty {
+            finishResume()
             poller?.invalidate()
             poller = nil
         }
@@ -234,6 +268,7 @@ final class AppModel {
     private func display(_ r: LookupResult?) {
         // Find belongs to the word it was opened on; a different word closes it.
         if finding && r?.word != shown?.word { endFind(refocus: false) }
+        if indexing && r?.word != shown?.word { endIndex(.stay, refocus: false) }
         shown = r
         noResults = r.map { $0.hits.isEmpty } ?? false
         let landing = pendingLanding.flatMap { $0.word == r?.word ? $0.landing : nil }
@@ -326,6 +361,31 @@ final class AppModel {
         requestFocus(selectAll: true)
     }
 
+    /// The word on screen and the place in it, for a relaunch to come back to.
+    var resumePoint: Visit? { shown.map { visit($0.word) } }
+
+    /// Opens `v` as it was left, without making it a new step in history. Waits for the
+    /// library to finish opening (two seconds at most), so the page lands once, with every
+    /// dictionary on it.
+    func resume(_ v: Visit) {
+        pendingResume = v
+        if !dictionaries.isEmpty && busy.isEmpty {
+            finishResume()
+        } else {
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                finishResume()
+            }
+        }
+    }
+
+    private func finishResume() {
+        guard let v = pendingResume else { return }
+        pendingResume = nil
+        committed = v.word
+        navigate(to: v.word, landing: v.place.map(Landing.place))
+    }
+
     func lookUpExternally(_ word: String) {
         openMainWindow?()
         commit(word)
@@ -383,6 +443,28 @@ final class AppModel {
 
     /// A character typed while the article had focus.
     func typed(_ key: String) {
+        // The arrows mean what they mean in the search field (or the find line).
+        switch key {
+        case "ArrowDown", "ArrowUp":
+            let d = key == "ArrowDown" ? 1 : -1
+            if finding { findStep(d) } else { stepSource(d) }
+            return
+        case "AltArrowDown", "AltArrowUp":
+            if !finding && !indexing { moveSelection(key == "AltArrowDown" ? 1 : -1) }
+            return
+        default:
+            break
+        }
+        if indexing {
+            switch key {
+            case "Escape": endIndex(.back)
+            case "Enter", "ShiftEnter": endIndex(.pick)
+            default:
+                indexQuery += key
+                indexFocusTick &+= 1
+            }
+            return
+        }
         if finding {
             switch key {
             case "Escape": endFind()
@@ -422,6 +504,7 @@ final class AppModel {
             requestFocus(selectAll: true)
             return
         }
+        if indexing { endIndex(.stay, refocus: false) }
         if !finding {
             finding = true
             findTotal = 0
@@ -454,6 +537,62 @@ final class AppModel {
         findIndex = index
         findPending = pending
     }
+
+    // MARK: going to a dictionary
+
+    /// ⌘J: the list opens where the reader is; ⌘J again closes it, keeping the place.
+    /// It opens whenever there is an entry, even from a single dictionary: it then says
+    /// so, and typing that runs ahead of the list stays in it instead of replacing the word.
+    func startIndex() {
+        guard canFind else {
+            requestFocus(selectAll: true)
+            return
+        }
+        if indexing { return endIndex(.stay) }
+        if finding { endFind(refocus: false) }
+        indexQuery = ""
+        indexName = ""
+        indexMatches = 0
+        indexTotal = 0
+        indexing = true
+        article?.indexOpen()
+        indexFocusTick &+= 1
+    }
+
+    func endIndex(_ exit: IndexExit, refocus: Bool = true) {
+        guard indexing else { return }
+        indexing = false
+        article?.indexClose(exit)
+        if refocus { requestFocus(selectAll: false) }
+    }
+
+    func indexMove(_ direction: Int) {
+        article?.indexMove(direction)
+    }
+
+    /// Next or previous dictionary: through the list while it is open, else down the page.
+    func stepSource(_ direction: Int) {
+        if indexing { indexMove(direction) } else { article?.jump(direction) }
+    }
+
+    /// The page reports the selection, or that it closed the list itself (a click).
+    func noteIndex(open: Bool, name: String, matches: Int, total: Int) {
+        guard open else {
+            if indexing {
+                indexing = false
+                requestFocus(selectAll: false)
+            }
+            return
+        }
+        // The line shows no name (the list does); VoiceOver hears it instead.
+        if name != indexName && !name.isEmpty {
+            AccessibilityNotification.Announcement(name).post()
+        }
+        indexName = name
+        indexMatches = matches
+        indexTotal = total
+    }
+
 
     // MARK: saved words
 
@@ -492,6 +631,15 @@ final class AppModel {
     }
 
     // MARK: reading
+
+    /// Dictionaries' own icons beside their names (some have none).
+    var showIcons: Bool {
+        get { prefs.showIcons }
+        set {
+            prefs.showIcons = newValue
+            article?.setIcons(newValue)
+        }
+    }
 
     var zoom: Double {
         get { prefs.zoom }
@@ -562,6 +710,14 @@ final class Prefs {
     var appearance: AppearanceMode {
         get { AppearanceMode(rawValue: d.string(forKey: "appearance") ?? "") ?? .system }
         set { d.set(newValue.rawValue, forKey: "appearance") }
+    }
+    var showIcons: Bool {
+        get { d.object(forKey: "showIcons") as? Bool ?? true }
+        set { d.set(newValue, forKey: "showIcons") }
+    }
+    var checksForUpdates: Bool {
+        get { d.object(forKey: "checksForUpdates") as? Bool ?? true }
+        set { d.set(newValue, forKey: "checksForUpdates") }
     }
     var hotKey: HotKeyPreset {
         get { HotKeyPreset(rawValue: d.string(forKey: "hotKey") ?? "") ?? .optionSpace }

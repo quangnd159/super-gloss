@@ -11,7 +11,7 @@ struct SuperGlossApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 980, height: 780)
+        .defaultSize(width: 1120, height: 780)
         .commands { AppCommands(model: model) }
 
         Settings {
@@ -32,6 +32,12 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            let updater = Updater.shared
+            Button(updater.isReady ? "Relaunch to Update" : "Check for Updates…") {
+                updater.isReady ? updater.relaunch() : updater.check(userInitiated: true)
+            }
+        }
         CommandGroup(replacing: .newItem) {
             Button("Add Dictionaries…") { chooseDictionaries() }
                 .keyboardShortcut("o")
@@ -58,10 +64,13 @@ struct AppCommands: Commands {
                 .keyboardShortcut("]")
                 .disabled(model.forwardStack.isEmpty)
             Divider()
-            Button("Next Source") { model.article?.jump(1) }
+            Button("Next Source") { model.stepSource(1) }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-            Button("Previous Source") { model.article?.jump(-1) }
+            Button("Previous Source") { model.stepSource(-1) }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+            Button("Go to Dictionary…") { model.startIndex() }
+                .keyboardShortcut("j")
+                .disabled(!model.canFind)
             Divider()
             Button("Pronounce") { model.article?.pronounce() }
                 .keyboardShortcut("p")

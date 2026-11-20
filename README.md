@@ -2,7 +2,7 @@
 
 # Super Gloss
 
-A dictionary for macOS 15+. Type a word and every dictionary you own answers on a single page. Each dictionary's name sits in the margin beside its entry.
+A dictionary for macOS 15+. Type a word and every dictionary you own answers on a single page. The margin lists the dictionaries that answered and marks the one you're reading; click a name to go there.
 
 Super Gloss doesn't include any dictionaries. It reads the dictionary files you already have.
 
@@ -20,6 +20,8 @@ The engine is written in Rust and the app in Swift. Supported formats:
 ## Install
 
 Download the latest `SuperGloss-<version>.dmg` from [Releases](https://github.com/quangnd159/super-gloss/releases), open it, and drag Super Gloss to Applications. It's a universal app (Apple Silicon and Intel), signed and notarized.
+
+From 1.2 it keeps itself up to date. A new version downloads in the background, and Super Gloss accepts it only if it's signed by the same developer. It goes in when you click **Relaunch** in the note that appears, by itself while Super Gloss is out of sight, or when you quit. Either way you come back to the word you were reading. Turn this off in **Settings → General**.
 
 ## Build
 
@@ -44,8 +46,9 @@ On first launch, drop a folder of dictionaries onto the window (or choose **File
 | --- | --- |
 | type | live results as you type; the gray completion shows the best match |
 | `Tab` / `Return` | accept the completion / look the word up |
-| `↑` `↓` | move along the word strip |
-| `⌥⌘↓` `⌥⌘↑` | jump to the next / previous dictionary |
+| `↓` `↑` (or `⌥⌘↓` `⌥⌘↑`) | jump to the next / previous dictionary |
+| `⌥↑` `⌥↓` | move along the word strip |
+| `⌘J` | go to a dictionary: type to narrow the margin's list (`ldoce`, `oald`, `thes`), `↑` `↓` to look through them, `Return` to stay, `Esc` to go back. In a narrow window it opens as a contents page |
 | `⌘[` `⌘]` | back / forward |
 | `⌘P` | pronounce |
 | `⌘R` | a random word |
@@ -56,7 +59,7 @@ On first launch, drop a folder of dictionaries onto the window (or choose **File
 
 You can also look words up from other apps. Select text and choose **Services → Look Up in Super Gloss**, or open a URL like `supergloss://lookup?q=word`.
 
-To reorder or hide dictionaries, use **Settings → Sources**. Click a dictionary's name in the margin to collapse its entry.
+To reorder or hide dictionaries, use **Settings → Sources**. Click the name above an entry to hide it; click it again, or the name in the margin, to show it. Some dictionaries come with an icon and some don't; to show names only, turn off **Show dictionary icons** in **Settings → General**.
 
 ## Layout
 

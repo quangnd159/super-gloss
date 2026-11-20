@@ -43,64 +43,57 @@ body {
 }
 #via b { color: var(--ink); font-weight: 600; }
 
-#col { transition: opacity 90ms ease-out; }
+/* The reading column: right of the margin, where the search line starts (MainView.Layout). */
+#col {
+  max-width: var(--col-w);
+  margin-left: calc(max(0px, (100% - var(--gloss-w) - 28px - var(--col-w)) / 2) + var(--gloss-w) + 28px);
+  transition: opacity 90ms ease-out;
+}
 #col.loading { opacity: 0; transition: none; }
 
 .src {
-  display: grid;
-  grid-template-columns: var(--gloss-w) minmax(0, var(--col-w));
-  column-gap: 28px;
-  justify-content: center;
   padding: 22px 0 26px;
   border-top: 1px solid var(--rule);
 }
 .src:first-child { border-top: 0; padding-top: 6px; }
-/* Finding: sources without a match recede, so the page shows where the hits are.
-   Their frames dim themselves (frame.js); this dims the name in the margin. */
-.gloss { transition: opacity 160ms ease-out; }
-body.finding .src.nofind .gloss { opacity: 0.3; }
+/* Room below the last entry, so going to any dictionary brings it to the top. */
+.src:last-child:not(:first-child) { box-sizing: border-box; min-height: calc(70vh - 6px); }
 
-.gloss {
-  position: sticky;
-  top: 14px;
-  align-self: start;
-  text-align: right;
-  padding-top: 7px;
-  color: var(--muted);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.055em;
-  line-height: 1.4;
-  text-transform: uppercase;
-  cursor: pointer;
-  overflow-wrap: anywhere;
+/* Each entry opens with its dictionary's name, quiet as a byline: the margin speaks in
+   small capitals, so the two never echo each other side by side. */
+.name {
+  margin: 0 0 10px;
+  font: inherit;
 }
-.gloss:hover { color: var(--ink); }
-.gloss img {
-  display: block;
-  width: 18px; height: 18px;
-  margin: 0 0 6px auto;
-  border-radius: 4px;
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  cursor: pointer;
+}
+.tag img {
+  flex: none;
+  width: 14px; height: 14px;
+  border-radius: 3px;
   object-fit: contain;
 }
-.gloss .fn {
-  display: block;
-  margin-top: 4px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
+html.noicons .tag img { display: none; }
+.tag .n, .tag .fn { margin-left: 3px; font-variant-numeric: tabular-nums; }
+.tag .n { color: var(--faint); }
+.tag .fn { color: var(--accent); }
+.tag:has(.fn) .n { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  .tag:hover { color: var(--ink); }
 }
-.gloss:has(.fn) .n { display: none; }
-.gloss .n {
-  display: block;
-  margin-top: 4px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  color: var(--faint);
-}
+/* Finding: entries without a match recede, so the page shows where the hits are.
+   Their frames dim themselves (frame.js); this dims their names here and in the margin. */
+body.finding .tag, body.finding #index .row { transition: opacity 160ms ease-out; }
+body.finding .src.nofind .tag, body.finding #index .row.nofind { opacity: 0.3; }
 
 .body { min-width: 0; position: relative; }
 
@@ -136,23 +129,159 @@ iframe {
 
 .src.collapsed iframe { display: none; }
 .src.collapsed .body::after {
-  content: "Hidden · click the source to show";
+  content: "Hidden · click the name to show";
   display: block;
-  padding-top: 7px;
   color: var(--faint);
   font-size: 12px;
 }
 
+/* Too little room for the margin: the column stands centred on its own, the name of the
+   entry being read stays at the top, and ⌘J brings the list up as a contents page. */
+@media (width < 1100px) {
+  #col { margin: 0 auto; }
+  #via { max-width: var(--col-w); padding-left: 0; }
+  .name {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: -8px 0 2px;
+    padding: 8px 0;
+    background: var(--bg);
+  }
+  .src.pinned .name::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; top: 100%;
+    height: 14px;
+    background: linear-gradient(var(--bg), transparent);
+    pointer-events: none;
+  }
+}
+
 @media (max-width: 760px) {
   body { padding-left: 18px; padding-right: 18px; }
-  .src { grid-template-columns: minmax(0, 1fr); }
-  .gloss {
-    position: static;
-    text-align: left;
-    padding: 0 0 8px;
-    display: flex; align-items: center; gap: 7px;
+  #col { margin: 0; }
+  #via { margin-left: 0; }
+}
+
+/* ---------- the dictionaries in the margin ----------
+   Two or more on the page and room in the margin: their names, right-aligned against
+   the column, the one being read in ink with an accent tick in the gutter, pointing at
+   it. ⌘J puts the keyboard on the same list; without the room it comes up as a
+   contents page over the article, its icons in line with the column. */
+#index {
+  display: none;
+  position: fixed;
+  z-index: 2;
+  /* the first name level with the first entry's */
+  top: 21px;
+  left: 24px;
+  /* to the margin's right edge, plus the gutter where the tick sits */
+  width: calc(max(28px, (100vw - var(--gloss-w) - 28px - var(--col-w)) / 2) + var(--gloss-w) - 24px + 14px);
+  max-height: calc(100vh - 31px);
+  box-sizing: border-box;
+  padding-right: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transition: opacity 90ms ease-out;
+}
+body.contents #index, body.indexing #index { display: block; }
+/* A new word's list arrives with its entries. */
+#col.loading ~ #index { opacity: 0; transition: none; }
+#index.below { -webkit-mask-image: linear-gradient(#000 calc(100% - 26px), transparent); }
+#index.above { -webkit-mask-image: linear-gradient(transparent, #000 26px); }
+#index.above.below { -webkit-mask-image: linear-gradient(transparent, #000 26px, #000 calc(100% - 26px), transparent); }
+
+#index .row {
+  position: relative;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 3px 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.055em;
+  line-height: 16px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+/* Like the margin's names, long ones wrap; past three lines they end in an ellipsis. */
+#index .nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+#index .n { display: none; }
+#index .ic { display: none; flex: none; width: 14px; height: 14px; margin-top: 1px; }
+#index.icons .ic { display: block; }
+html.noicons #index .ic { display: none; }
+#index img { display: block; width: 100%; height: 100%; border-radius: 3px; object-fit: contain; }
+/* What the typing matched reads in full ink; the rest stays quiet. */
+#index b { font-weight: inherit; color: var(--ink); }
+#index .row.hid { color: var(--faint); }
+#index .row.out { opacity: 0.28; }
+#index .row.sel { color: var(--ink); opacity: 1; }
+#index .row.sel::after {
+  content: "";
+  position: absolute;
+  right: -14px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+@media (hover: hover) and (pointer: fine) {
+  #index .row:hover { color: var(--ink); }
+}
+@media (width < 1100px) {
+  body.contents:not(.indexing) #index { display: none; }
+  #index {
+    inset: 0;
+    width: auto;
+    max-height: none;
+    /* names on the column's line; the highlight reaches a little into the gutters */
+    --lead: max(28px, (100vw - var(--col-w)) / 2);
+    padding: 2px calc(var(--lead) - 10px) 30vh;
+    background: var(--bg);
   }
-  .gloss img { margin: 0; width: 15px; height: 15px; }
-  .gloss .n, .gloss .fn { margin: 0 0 0 auto; }
-  #via { padding-left: 0; }
+  #index.below, #index.above, #index.above.below { -webkit-mask-image: none; }
+  /* A Mac list: no rules between rows, one rounded highlight for the selection. */
+  #index .row {
+    flex-direction: row;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 18px;
+    text-transform: none;
+  }
+  #index .nm { text-align: left; }
+  #index .n {
+    display: block;
+    color: var(--faint);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  #index .ic { width: 16px; height: 16px; margin-top: 1px; }
+  #index b { color: var(--accent); }
+  #index .row.hid { color: var(--muted); }
+  #index .row.sel { background: color-mix(in srgb, var(--ink) 9%, transparent); }
+  #index .row.sel::after { content: none; }
+  @media (hover: hover) and (pointer: fine) {
+    #index .row:not(.sel):hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+  }
+}
+@media (max-width: 760px) {
+  #index { --lead: 18px; }
 }

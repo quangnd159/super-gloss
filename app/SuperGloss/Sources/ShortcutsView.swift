@@ -9,7 +9,7 @@ struct ShortcutsView: View {
             Section("Look up") {
                 ShortcutRow("Look up the word", keys: ["Return"])
                 ShortcutRow("Accept the suggested ending", keys: ["Tab"])
-                ShortcutRow("Previous or next related word", keys: ["↑"], or: ["↓"])
+                ShortcutRow("Previous or next related word", keys: ["⌥", "↑"], or: ["⌥", "↓"])
                 ShortcutRow("Go to the search line", keys: ["⌘", "L"])
                 ShortcutRow("Clear the search, or hide when empty", keys: ["Esc"])
                 ShortcutRow("Look up a word in an entry", gesture: "Double-click")
@@ -21,8 +21,9 @@ struct ShortcutsView: View {
                 ShortcutRow("Done", keys: ["Esc"])
             }
             Section("Read") {
-                ShortcutRow("Next dictionary", keys: ["⌥", "↓"], or: ["⌥", "⌘", "↓"])
-                ShortcutRow("Previous dictionary", keys: ["⌥", "↑"], or: ["⌥", "⌘", "↑"])
+                ShortcutRow("Next dictionary", keys: ["↓"], or: ["⌥", "⌘", "↓"])
+                ShortcutRow("Previous dictionary", keys: ["↑"], or: ["⌥", "⌘", "↑"])
+                ShortcutRow("Go to a dictionary", keys: ["⌘", "J"])
                 ShortcutRow("Scroll a page", keys: ["Page Down"], or: ["Page Up"])
                 ShortcutRow("Pronounce", keys: ["⌘", "P"])
                 ShortcutRow("Save the word, or remove it", keys: ["⌘", "D"])
