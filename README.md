@@ -55,7 +55,7 @@ On first launch, drop a folder of dictionaries onto the window (or choose **File
 | `⌘=` `⌘-` `⌘0` | text size |
 | `⌘/` | every keyboard shortcut |
 | double-click a word in an entry | look it up |
-| `⌥Space` (anywhere) | show or hide Super Gloss (change it in Settings) |
+| `⌥Space` (anywhere) | show or hide Super Gloss (change the Super Gloss Hotkey in Settings → General) |
 
 You can also look words up from other apps. Select text and choose **Services → Look Up in Super Gloss**, or open a URL like `supergloss://lookup?q=word`.
 
