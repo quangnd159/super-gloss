@@ -69,7 +69,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
-	<string></string>
+	<string>Copyright © 2026 Nguyễn Đăng Quang.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSServices</key>

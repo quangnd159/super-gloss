@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		08FCE36B52ED893C67CEFD53 /* UpdatePill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61D1FC044D98A87644D6F70F /* UpdatePill.swift */; };
+		108025A2D1671268368EE375 /* Credits.rtf in Resources */ = {isa = PBXBuildFile; fileRef = BBD8C7029B6A0FDE1F4C8764 /* Credits.rtf */; };
 		1B67BC6DB1AC948AF9B41D3F /* SuperGlossApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B049D45ADB627DCC68B5115 /* SuperGlossApp.swift */; };
 		4225F249FFB11CD795785E86 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A8871BABC101E5208831752 /* SettingsView.swift */; };
 		625A704025ACAC0D7F823D6B /* System.swift in Sources */ = {isa = PBXBuildFile; fileRef = 867D86E8748C5FFD88958566 /* System.swift */; };
@@ -35,6 +36,7 @@
 		9B049D45ADB627DCC68B5115 /* SuperGlossApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SuperGlossApp.swift; sourceTree = "<group>"; };
 		AAD045282932FCD901920DCC /* Web */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Web; path = SuperGloss/Web; sourceTree = SOURCE_ROOT; };
 		B282A9FF851F641C0A8287F6 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		BBD8C7029B6A0FDE1F4C8764 /* Credits.rtf */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; path = Credits.rtf; sourceTree = "<group>"; };
 		D03EE20DABE08D8B971D5764 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
 		F8D3D12FC8AC90D7302DE597 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -44,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				1623A967FC39F8359AADF004 /* AppIcon.icon */,
+				BBD8C7029B6A0FDE1F4C8764 /* Credits.rtf */,
 				AAD045282932FCD901920DCC /* Web */,
 				72CE9FEC906F3A745265E15E /* Sources */,
 			);
@@ -146,6 +149,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D06DC4761DAA20B05415A26F /* AppIcon.icon in Resources */,
+				108025A2D1671268368EE375 /* Credits.rtf in Resources */,
 				EDCB2B05C379F0139CF9C501 /* Web in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

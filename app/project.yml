@@ -22,6 +22,10 @@ targets:
       - path: SuperGloss/AppIcon.icon
         type: file
         buildPhase: resources
+      # The About panel's credits (a link to the author's site), read by AppKit.
+      - path: SuperGloss/Credits.rtf
+        type: file
+        buildPhase: resources
       - path: SuperGloss/Web
         type: folder
         buildPhase: resources
