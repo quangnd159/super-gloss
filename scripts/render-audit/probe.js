@@ -23,6 +23,7 @@
     // The face the text reads in, weighted by characters.
     const faces = {};
     let chars = 0;
+    let garbled = null;
     const walk = document.createTreeWalker(b, NodeFilter.SHOW_TEXT);
     for (let n = walk.nextNode(); n; n = walk.nextNode()) {
       const k = n.data.trim().length;
@@ -30,6 +31,9 @@
       const cs = getComputedStyle(n.parentElement);
       const face = cs.fontFamily.split(',')[0].trim().replace(/^"|"$/g, '') + ' ' + cs.fontSize;
       faces[face] = (faces[face] || 0) + k;
+      // Replacement characters, or UTF-8 read as Latin-1 / Windows-1252 (Ã©, â€™).
+      const g = garbled || /\uFFFD|[ÃÂ][\u0080-\u00BF\u2018-\u203A€™œž]|Ð[\u0080-\u00BF]|â€./.exec(n.data);
+      if (g && !garbled) garbled = n.data.slice(Math.max(0, g.index - 12), g.index + 12);
       chars += k;
     }
     const face = Object.entries(faces).sort((x, y) => y[1] - x[1])[0];
@@ -38,6 +42,7 @@
       overflow: b.scrollWidth - b.clientWidth,
       height: Math.ceil(b.getBoundingClientRect().height),
       culprit,
+      garbled,
       face: face ? face[0] : '',
       faceShare: face ? face[1] / chars : 0,
       broken: [...document.images].filter((i) => i.complete && !i.naturalWidth).map((i) => i.getAttribute('src')),

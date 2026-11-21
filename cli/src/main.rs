@@ -8,6 +8,7 @@
 //!   sgloss [--cache DIR] bench  <roots…>
 //!   sgloss [--cache DIR] verify <roots…>               (renders a sample of every dictionary)
 //!   sgloss [--cache DIR] random <roots…>               (N random words, N=40 by default)
+//!   sgloss [--cache DIR] sample <roots…>               (N headwords spread through each dictionary, N=3)
 
 use std::time::Instant;
 use supergloss::library::{Config, Library};
@@ -98,6 +99,21 @@ fn main() {
             eprintln!("{} words in {:?}", picks.len(), t.elapsed());
             for (w, k) in picks {
                 println!("{k:3}  {w}");
+            }
+        }
+        "sample" => {
+            let n: usize = std::env::var("N").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+            let mut seen = std::collections::HashSet::new();
+            for d in lib.summaries() {
+                let Some(l) = lib.dict(&d.id).and_then(|d| d.loaded()) else { continue };
+                let len = l.index.len();
+                for k in 0..n.min(len) {
+                    if let Some((w, _)) = l.index.entry(k * len / n.min(len) + len / (2 * n.min(len))) {
+                        if seen.insert(w.to_string()) {
+                            println!("{w}");
+                        }
+                    }
+                }
             }
         }
         "verify" => verify(&lib),

@@ -24,6 +24,7 @@ while let a = rest.popFirst() {
     case "--only": only = rest.popFirst()
     case "--random": random = Int(rest.popFirst() ?? "") ?? 0
     case "--root": roots.append(rest.popFirst() ?? "")
+    case "--words": words += ((try? String(contentsOfFile: rest.popFirst() ?? "", encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
     default: words.append(a)
     }
 }
@@ -241,6 +242,7 @@ print("\(frames.count) frames from \(sources) sources, \(words.count) words, \(I
 list("Scroll sideways", frames.filter { $0.probe["overflow"] as! Int > 0 }) { "\($0.probe["overflow"]!)px, \($0.probe["culprit"] as? String ?? "?")" }
 list("Keep growing", frames.filter { $0.growth > 0 }) { "+\($0.growth)px in 1s" }
 list("Cut off", frames.filter { $0.growth == 0 && $0.probe["height"] as! Int > $0.shown + 2 }) { "content \($0.probe["height"]!)px in a \($0.shown)px frame" }
+list("Garbled text", frames.filter { $0.probe["garbled"] is String }) { "…\($0.probe["garbled"]!)…" }
 list("Default face (Times)", frames.filter { ($0.probe["face"] as! String).hasPrefix("Times") }) { "\($0.probe["face"]!)" }
 list("Missing images", frames.filter { !($0.probe["broken"] as! [String]).isEmpty }) { ($0.probe["broken"] as! [String]).prefix(3).joined(separator: " ") }
 list("Script errors", frames.filter { !($0.probe["errors"] as! [String]).isEmpty }) { ($0.probe["errors"] as! [String]).prefix(2).joined(separator: " | ") }

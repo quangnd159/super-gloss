@@ -3,7 +3,7 @@
 # renders badly: sideways scrolling, missing images, the default face, script errors,
 # frames that keep growing or cut off their content. Also renders scripts/render-audit/fixtures.
 # Usage: scripts/render-audit.sh [--width 1000] [--dark] [--random N] [--only DICT]
-#                                [--root DIR]… [--shots DIR] [word…]
+#                                [--root DIR]… [--words FILE] [--shots DIR] [word…]
 set -euo pipefail
 cd "${0:A:h}/.."
 export PATH="$HOME/.cargo/bin:$PATH"
