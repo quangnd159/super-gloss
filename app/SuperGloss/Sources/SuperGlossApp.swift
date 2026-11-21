@@ -77,6 +77,8 @@ struct AppCommands: Commands {
             Button(model.shownIsSaved ? "Remove from Saved" : "Save Word") { model.toggleSaved() }
                 .keyboardShortcut("d")
                 .disabled(model.shownWord == nil)
+            Button("Copy Saved Words") { model.copySaved() }
+                .disabled(model.saved.isEmpty)
             Button("Surprise Me") { model.surprise() }
                 .keyboardShortcut("r")
         }

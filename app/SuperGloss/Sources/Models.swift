@@ -87,3 +87,10 @@ struct LookupResult: Codable, Hashable, Sendable {
     let via: String?
     let hits: [Hit]
 }
+
+/// A word on the home page, or the "N more" that unfolds the saved words.
+enum HomeItem: Hashable, Sendable {
+    case saved(String)
+    case more
+    case recent(String)
+}

@@ -30,7 +30,7 @@ struct SourcesPane: View {
                     Text("Articles appear in this order. Drag to rearrange.")
                 }
                 Section("Locations") {
-                    ForEach(model.prefs.roots, id: \.self) { root in
+                    ForEach(model.roots, id: \.self) { root in
                         HStack {
                             Image(systemName: "folder")
                                 .foregroundStyle(.secondary)

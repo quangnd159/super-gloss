@@ -53,10 +53,7 @@ struct MainView: View {
                     ArticleView(model: model)
                         .opacity(model.query.isEmpty || model.noResults ? 0 : 1)
                     if model.query.isEmpty {
-                        Home(model: model)
-                            .padding(.leading, lead)
-                            .padding(.trailing, Column.margin)
-                            .padding(.top, 26)
+                        Home(model: model, lead: lead)
                             .transition(.opacity)
                     } else if model.noResults {
                         NoResults(query: model.query)
@@ -205,7 +202,9 @@ struct SearchField: View {
                 // ↑↓ go between dictionaries, the most frequent move; ⌥↑↓ along the related words.
                 .onKeyPress(keys: [.downArrow, .upArrow], phases: [.down, .repeat]) { press in
                     let d = press.key == .downArrow ? 1 : -1
-                    if press.modifiers.contains(.option) {
+                    if model.query.isEmpty {
+                        model.moveHome(d)
+                    } else if press.modifiers.contains(.option) {
                         model.moveSelection(d)
                     } else {
                         model.article?.jump(d)
@@ -286,13 +285,7 @@ struct StripWord: View {
                 .italic(suggestion.kind == "fuzzy")
                 .foregroundStyle(color)
                 .lineLimit(1)
-                .overlay(alignment: .bottom) {
-                    Capsule()
-                        .fill(Color.ink)
-                        .frame(height: 2)
-                        .offset(y: 4)
-                        .opacity(selected ? 1 : 0)
-                }
+                .selectionMark(selected, below: 4)
                 // Saved words carry a small mark, like a dot pencilled beside them.
                 .overlay(alignment: .topTrailing) {
                     if saved {
@@ -506,68 +499,134 @@ struct NavButton: View {
 
 struct Home: View {
     let model: AppModel
+    let lead: CGFloat
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            if model.dictionaries.isEmpty {
-                Onboarding(model: model)
-            } else {
-                if !model.saved.isEmpty {
-                    SavedWords(model: model)
-                }
-                if !model.history.isEmpty {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Label2("Recent")
-                        ForEach(model.history.prefix(9), id: \.self) { w in
-                            HomeLink(text: model.label(w)) { model.commit(w) }
-                        }
+        if model.dictionaries.isEmpty {
+            Onboarding(model: model)
+                .frame(maxWidth: Column.reading, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, lead)
+                .padding(.trailing, Column.margin)
+                .padding(.top, 26)
+                .padding(.bottom, 24)
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                // The page scrolls under the header, so a long list of saved words is all there.
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        lists
+                            .frame(maxWidth: Column.reading, alignment: .leading)
+                            .padding(.leading, lead)
+                            .padding(.trailing, Column.margin)
+                            .padding(.top, 26)
+                            .padding(.bottom, 22)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .mask(EdgeFade())
+                    .id(model.homeVisit)
+                    .onAppear {
+                        // Back from a word opened here: it sits mid-page, among its neighbours.
+                        if let item = model.homeSelection { proxy.scrollTo(item, anchor: .center) }
+                    }
+                    .onChange(of: model.homeSelection) {
+                        // nil anchor: the least scrolling that brings the word into view.
+                        if let item = model.homeSelection { proxy.scrollTo(item) }
                     }
                 }
-                HStack(spacing: 18) {
-                    SurpriseButton { model.surprise() }
-                    Button { openWindow(id: "shortcuts") } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "command")
-                            Text("Shortcuts")
-                        }
-                        .foregroundStyle(.secondary)
-                    }
-                    .help("Every keyboard shortcut (⌘/)")
-                }
-                .font(.system(size: 13))
-                .buttonStyle(.plain)
-                Spacer(minLength: 0)
                 LibraryStatus(model: model)
+                    .padding(.leading, lead)
+                    .padding(.top, 10)
+                    .padding(.bottom, 24)
             }
         }
-        .frame(maxWidth: Column.reading, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.bottom, 24)
+    }
+
+    private var lists: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            if !model.saved.isEmpty {
+                SavedWords(model: model)
+            }
+            if !model.history.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Label2("Recent")
+                    ForEach(model.history.prefix(AppModel.recentShown), id: \.self) { w in
+                        HomeLink(text: model.label(w), selected: model.homeSelection == .recent(w)) { model.commit(w) }
+                            .scrollTarget(HomeItem.recent(w))
+                    }
+                }
+            }
+            HStack(spacing: 18) {
+                SurpriseButton { model.surprise() }
+                Button { openWindow(id: "shortcuts") } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "command")
+                        Text("Shortcuts")
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .help("Every keyboard shortcut (⌘/)")
+            }
+            .font(.system(size: 13))
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+/// Words fade out where the home page scrolls under its edges.
+private struct EdgeFade: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 18)
+            Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: 18)
+        }
+    }
+}
+
+extension View {
+    /// Scrolling to `id` brings this view in clear of the faded edges, underline and all.
+    func scrollTarget<ID: Hashable>(_ id: ID) -> some View {
+        background(Color.clear.frame(height: 88).id(id))
     }
 }
 
 /// Home: saved words set as a flowing line of text, newest first.
 struct SavedWords: View {
     let model: AppModel
-    @State private var expanded = false
-    private static let shown = 24
 
     var body: some View {
+        let all = model.saved
+        let folded = !model.savedExpanded && all.count > AppModel.savedShown
         VStack(alignment: .leading, spacing: 7) {
-            Label2("Saved")
+            HStack(spacing: 7) {
+                Label2("Saved")
+                Text(all.count.formatted())
+                    .font(.system(size: 10.5, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.quaternary)
+            }
+            .contextMenu {
+                Button("Copy All Saved Words") { model.copySaved() }
+            }
             Flow(spacing: 18, lineSpacing: 4) {
-                ForEach(expanded ? model.saved : Array(model.saved.prefix(Self.shown)), id: \.self) { w in
-                    HomeLink(text: model.label(w)) { model.commit(w) }
+                ForEach(folded ? Array(all.prefix(AppModel.savedShown)) : all, id: \.self) { w in
+                    HomeLink(text: model.label(w), selected: model.homeSelection == .saved(w)) { model.commit(w) }
+                        .scrollTarget(HomeItem.saved(w))
                         .contextMenu {
                             Button("Remove from Saved") { model.unsave(w) }
                         }
                 }
-                if !expanded && model.saved.count > Self.shown {
-                    Button("\(model.saved.count - Self.shown) more") { expanded = true }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.ink)
-                        .frame(height: 25)
+                if folded {
+                    Button { model.open(.more) } label: {
+                        Text("\(all.count - AppModel.savedShown) more")
+                            .selectionMark(model.homeSelection == .more, below: 3)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.ink)
+                    .frame(height: 25)
+                    .scrollTarget(HomeItem.more)
                 }
             }
         }
@@ -645,17 +704,33 @@ struct SurpriseButton: View {
 
 struct HomeLink: View {
     let text: String
+    var selected = false
     let action: () -> Void
     @State private var hover = false
     var body: some View {
         Button(action: action) {
             Text(text)
                 .font(.system(size: 19, design: .serif))
-                .foregroundStyle(hover ? .primary : .secondary)
+                .foregroundStyle(hover || selected ? .primary : .secondary)
                 .lineLimit(1)
+                .selectionMark(selected, below: 2)
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.1), value: selected)
+    }
+}
+
+extension View {
+    /// The ink underline under the word the keyboard is on, as in the related words.
+    func selectionMark(_ on: Bool, below: CGFloat) -> some View {
+        overlay(alignment: .bottom) {
+            Capsule()
+                .fill(Color.ink)
+                .frame(height: 2)
+                .offset(y: below)
+                .opacity(on ? 1 : 0)
+        }
     }
 }
 

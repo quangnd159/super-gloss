@@ -33,6 +33,7 @@ struct ShortcutsView: View {
                 ShortcutRow("Back", keys: ["⌘", "["])
                 ShortcutRow("Forward", keys: ["⌘", "]"])
                 ShortcutRow("Surprise me", keys: ["⌘", "R"])
+                ShortcutRow("Step through saved and recent words on the home page", keys: ["↓"], or: ["↑"])
             }
             Section("Text size") {
                 ShortcutRow("Bigger", keys: ["⌘", "+"])

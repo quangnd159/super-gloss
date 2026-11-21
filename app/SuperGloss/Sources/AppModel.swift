@@ -42,7 +42,12 @@ final class AppModel {
     // MARK: search state
 
     var query = "" {
-        didSet { if query != oldValue && !programmatic { search(show: nil) } }
+        didSet {
+            guard query != oldValue else { return }
+            // Back on home from a word opened there: the keyboard is on it again, so ↓ goes on to the next.
+            homeSelection = query.isEmpty ? homeReturn.flatMap { homeItems.contains($0) ? $0 : nil } : nil
+            if !programmatic { search(show: nil) }
+        }
     }
     private(set) var suggestions: [Suggestion] = []
     /// Index into `suggestions` of the word on screen; -1 when the shown word is not in the strip.
@@ -99,9 +104,22 @@ final class AppModel {
     /// Incremented when a word is saved, for the mark's moment of motion.
     private(set) var saveTick = 0
 
+    // MARK: home
+
+    /// The home page lists every saved word, not just the newest.
+    var savedExpanded = false
+    /// What ↑↓ from the empty search line are on.
+    private(set) var homeSelection: HomeItem?
+    /// Each time the app is put away, the next visit opens a calm home page: folded, at the top.
+    private(set) var homeVisit = 0
+    /// The home word last opened this visit, where coming back lands.
+    @ObservationIgnored private var homeReturn: HomeItem?
+
     // MARK: library
 
     private(set) var dictionaries: [DictSummary] = []
+    /// Folders and files dictionaries are read from, as Settings lists them.
+    private(set) var roots: [String] = []
     var readyCount: Int { dictionaries.filter { $0.isReady && $0.enabled }.count }
     var busy: [DictSummary] { dictionaries.filter(\.isBusy) }
     var indexingProgress: Double? {
@@ -136,7 +154,12 @@ final class AppModel {
         audio = AudioPlayer(engine: engine)
         history = prefs.history
         saved = prefs.saved
+        roots = prefs.roots
         applyConfiguration()
+        // Esc, the hotkey and ⌘H all hide the app; that ends a visit.
+        NotificationCenter.default.addObserver(forName: NSApplication.didHideNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { AppModel.shared.endHomeVisit() }
+        }
     }
 
     // MARK: configuration
@@ -148,7 +171,6 @@ final class AppModel {
     }
 
     func addRoots(_ urls: [URL]) {
-        var roots = prefs.roots
         for u in urls where !roots.contains(u.path) {
             roots.append(u.path)
         }
@@ -157,7 +179,8 @@ final class AppModel {
     }
 
     func removeRoot(_ path: String) {
-        prefs.roots.removeAll { $0 == path }
+        roots.removeAll { $0 == path }
+        prefs.roots = roots
         applyConfiguration()
     }
 
@@ -312,7 +335,9 @@ final class AppModel {
 
     /// Return key: commit the word on screen.
     func submit() {
-        if selected >= 0 && selected < suggestions.count {
+        if query.isEmpty, let item = homeSelection {
+            open(item)
+        } else if selected >= 0 && selected < suggestions.count {
             commit(suggestions[selected].word)
         } else if let w = shown?.word, !(shown?.hits.isEmpty ?? true) {
             commit(w)
@@ -627,8 +652,59 @@ final class AppModel {
     }
 
     func unsave(_ word: String) {
+        if homeSelection == .saved(word) { homeSelection = nil }
         saved.removeAll { $0.caseInsensitiveCompare(word) == .orderedSame }
         prefs.saved = saved
+    }
+
+    /// Every saved word, one per line, newest first: ready to paste into flashcards.
+    func copySaved() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(saved.map(label).joined(separator: "\n"), forType: .string)
+    }
+
+    // MARK: home
+
+    /// How many saved words the home page shows before "N more".
+    static let savedShown = 24
+    static let recentShown = 9
+
+    /// The home page's words in the order ↑↓ walk them.
+    var homeItems: [HomeItem] {
+        let folded = !savedExpanded && saved.count > Self.savedShown
+        var items = saved.prefix(folded ? Self.savedShown : saved.count).map(HomeItem.saved)
+        if folded { items.append(.more) }
+        return items + history.prefix(Self.recentShown).map(HomeItem.recent)
+    }
+
+    /// ↓ from the search line goes onto the first word; ↑ from the first goes back to the line.
+    func moveHome(_ d: Int) {
+        let items = homeItems
+        guard let i = homeSelection.flatMap(items.firstIndex) else {
+            if d > 0, let first = items.first { homeSelection = first }
+            return
+        }
+        let n = i + d
+        homeSelection = n < 0 ? nil : items[min(n, items.count - 1)]
+    }
+
+    func open(_ item: HomeItem) {
+        switch item {
+        case .saved(let w), .recent(let w):
+            homeReturn = item
+            commit(w)
+        case .more:
+            savedExpanded = true
+            if homeSelection == .more { homeSelection = saved.indices.contains(Self.savedShown) ? .saved(saved[Self.savedShown]) : nil }
+        }
+    }
+
+    private func endHomeVisit() {
+        savedExpanded = false
+        homeSelection = nil
+        homeReturn = nil
+        homeVisit &+= 1
     }
 
     func clearHistory() {
@@ -667,16 +743,10 @@ final class Prefs {
         }
     }
 
-    static var libraryFolder: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Super Gloss/Dictionaries", isDirectory: true)
-    }
-
     /// Well-known places dictionaries live. Avoids TCC-protected folders
     /// (Documents, Downloads, Desktop) so first launch never prompts.
     static func defaultRoots() -> [String] {
         let fm = FileManager.default
-        try? fm.createDirectory(at: libraryFolder, withIntermediateDirectories: true)
         let home = fm.homeDirectoryForCurrentUser.path
         let candidates = [
             "/Applications/Dictionaries",
@@ -684,7 +754,6 @@ final class Prefs {
             "\(home)/Dictionaries",
             "\(home)/.goldendict/dictionaries",
             "\(home)/.stardict/dic",
-            libraryFolder.path,
         ]
         return candidates.filter { fm.fileExists(atPath: $0) }
     }
