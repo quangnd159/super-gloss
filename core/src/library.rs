@@ -19,6 +19,9 @@ pub const INDEX_VERSION: u32 = 4;
 #[derive(Serialize, Deserialize)]
 struct Meta {
     version: u32,
+    /// The format's own revision (`Kind::revision`), so one format's change rebuilds only its indexes.
+    #[serde(default)]
+    revision: u32,
     fingerprint: Vec<(String, u64, i64)>,
     info: DictInfo,
 }
@@ -395,7 +398,7 @@ impl Library {
     fn read_meta(&self, d: &Dict) -> Option<Meta> {
         let raw = std::fs::read(self.cache_root.join(&d.id).join("meta.json")).ok()?;
         let m: Meta = serde_json::from_slice(&raw).ok()?;
-        (m.version == INDEX_VERSION && m.fingerprint == d.fingerprint).then_some(m)
+        (m.version == INDEX_VERSION && m.revision == d.kind.revision() && m.fingerprint == d.fingerprint).then_some(m)
     }
 
     /// Claims the next pending dictionary: cached ones first, then smallest first.
@@ -450,7 +453,7 @@ impl Library {
                 return Err(e);
             }
         };
-        let meta = Meta { version: INDEX_VERSION, fingerprint: d.fingerprint.clone(), info };
+        let meta = Meta { version: INDEX_VERSION, revision: d.kind.revision(), fingerprint: d.fingerprint.clone(), info };
         std::fs::write(tmp.join("meta.json"), serde_json::to_vec(&meta)?)?;
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::rename(&tmp, &dir).context("install index")?;
@@ -928,9 +931,12 @@ impl Library {
                 body.push_str("<hr class=\"sg-sep\">");
             }
             body.push_str("<article class=\"sg-entry\">");
-            if !foreign && !starts_with_headword(&html, w) {
+            // Every entry opens with its headword. MDict pages are designed around their own;
+            // other formats get one unless their text already starts with it.
+            let head = l.index.headword(i).unwrap_or(w);
+            if d.kind != Kind::Mdict && !starts_with_headword(&html, head) {
                 body.push_str("<h1 class=\"sg-hw\">");
-                html_escape_into(&mut body, w);
+                html_escape_into(&mut body, head);
                 body.push_str("</h1>");
             }
             body.push_str(&html);
@@ -1087,19 +1093,27 @@ fn osa_distance(a: &str, b: &str) -> usize {
 /// True when an article's visible text already opens with its headword
 /// (ignoring syllable dots, stress marks and case), so no heading is added.
 fn starts_with_headword(html: &str, word: &str) -> bool {
+    // The text a reader sees first: tags, and the insides of <style> and <script>, aren't.
     let mut text = String::new();
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => {
-                text.push(c);
-                if text.len() > 300 {
-                    break;
-                }
-            }
-            _ => {}
+    let mut rest = html;
+    while text.len() <= 300 {
+        let Some(lt) = rest.find('<') else {
+            text.push_str(rest);
+            break;
+        };
+        text.push_str(&rest[..lt]);
+        rest = &rest[lt..];
+        let gt = rest.find('>').map_or(rest.len(), |i| i + 1);
+        let name: String = rest[1..gt.max(1)].chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        rest = &rest[gt..];
+        // A line break or a block between words parts them ("milli-<br>pref.").
+        if matches!(name.as_str(), "br" | "p" | "div" | "li" | "dd" | "dt" | "tr" | "td" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+            text.push(' ');
+        }
+        if name == "style" || name == "script" {
+            let close = format!("</{name}");
+            let end = rest.as_bytes().windows(close.len()).position(|w| w.eq_ignore_ascii_case(close.as_bytes())).unwrap_or(rest.len());
+            rest = &rest[end..];
         }
     }
     let clean = |s: &str| -> Vec<char> {
@@ -1115,14 +1129,29 @@ fn starts_with_headword(html: &str, word: &str) -> bool {
     };
     let t = clean(&text);
     let w = clean(word);
-    if w.is_empty() || t.len() < w.len() || t[..w.len()] != w[..] {
+    if w.is_empty() {
         return false;
     }
-    // The headword must end at a word boundary in the text.
-    t.get(w.len()).is_none_or(|c| !c.is_alphanumeric()) || {
-        // allow superscript homograph numbers like "bank1"
-        t[w.len()..].iter().take_while(|c| c.is_ascii_digit()).count() > 0
+    let leads = |t: &[char]| {
+        t.len() >= w.len()
+            && t[..w.len()] == w[..]
+            // The headword must end at a word boundary in the text, or at a homograph number ("bank1").
+            && t.get(w.len()).is_none_or(|c| !c.is_alphanumeric() || c.is_ascii_digit())
+    };
+    // Or after a homograph's ordinal: "I. re·tort", "Ⅱ. Arab", "2) run".
+    leads(&t) || after_ordinal(&t).is_some_and(|rest| leads(rest))
+}
+
+/// What follows a leading ordinal and its punctuation: a roman (ASCII or ⅠⅡⅢ) or arabic
+/// number, then "." or ")", then space and any markers.
+fn after_ordinal(t: &[char]) -> Option<&[char]> {
+    let n = t.iter().take_while(|c| matches!(c, 'I' | 'V' | 'X' | 'i' | 'v' | 'x' | '\u{2160}'..='\u{217F}') || c.is_ascii_digit()).count();
+    if n == 0 || n > 4 || !matches!(t.get(n), Some('.' | ')')) {
+        return None;
     }
+    let rest = &t[n + 1..];
+    let skip = rest.iter().take_while(|c| !c.is_alphanumeric()).count();
+    (skip > 0).then(|| &rest[skip..])
 }
 
 fn expand_tilde(p: &str) -> String {
@@ -1280,6 +1309,13 @@ mod tests {
         assert!(starts_with_headword("<b>a la carte</b>", "à la carte"));
         assert!(starts_with_headword("<b>Kind and thoughtful</b>", "↑Kind and thoughtful"));
         assert!(starts_with_headword("—<b>run</b> UK", "run"));
+        assert!(starts_with_headword("<STYLE>#I_C{width:18px}</STYLE><TD><FONT>[nhà]</FONT></TD>", "nhà"));
+        assert!(!starts_with_headword("<script>var run = 1</script>verb", "run"));
+        assert!(starts_with_headword("<b>I.</b> <b>re·tort</b><sup>1</sup>", "retort"));
+        assert!(starts_with_headword("Ⅰ. Arab UK", "Arab"));
+        assert!(starts_with_headword("▪ I. Arab 1 UK", "Arab"));
+        assert!(!starts_with_headword("I. verb", "run"));
+        assert!(starts_with_headword("<b>milli-</b><br><abbr>pref.</abbr>", "milli-"));
         assert_eq!(osa_distance("recieve", "receive"), 1);
     }
 

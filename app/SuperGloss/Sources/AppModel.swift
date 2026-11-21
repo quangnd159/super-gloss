@@ -217,7 +217,13 @@ final class AppModel {
     /// Re-runs the current search so newly indexed or re-ordered sources appear.
     private func refreshCurrent() {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        let word = selected >= 0 && selected < suggestions.count ? suggestions[selected].word : shown?.word
+        // The first suggestion was the best match among the dictionaries ready then, not the
+        // reader's choice: choose again now that there are more ("nhà", not "nhang").
+        if selected == 0 {
+            search(show: nil, force: true)
+            return
+        }
+        let word = selected > 0 && selected < suggestions.count ? suggestions[selected].word : shown?.word
         search(show: word, force: true)
     }
 

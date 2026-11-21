@@ -3,7 +3,9 @@
 //! Layout of an index named `N` inside a directory:
 //! * `N.fst`     — FST map: key → (first entry << 24 | entry count)
 //! * `N.entries` — fixed 24-byte records sorted by key: word_off u32, word_len u32, a u64, b u64
-//! * `N.words`   — UTF-8 display headwords, concatenated
+//! * `N.words`   — UTF-8 display headwords, concatenated. A form that only leads to an
+//!   entry (an inflection, a reading, a spelling without diacritics) is followed by a NUL
+//!   and the entry's own headword.
 //!
 //! `a`/`b` form a format-specific [`Locator`].
 
@@ -80,6 +82,18 @@ impl IndexBuilder {
         let word = word.trim();
         if let Some(key) = fold::index_key(word) {
             self.items.push(Item { key, word: word.to_string(), loc });
+        }
+    }
+
+    /// Adds `form`, another way to reach the entry whose headword is `head`: it is found
+    /// and suggested as `form`, and the entry opens under `head`.
+    pub fn add_form(&mut self, form: &str, head: &str, loc: Locator) {
+        let (form, head) = (form.trim(), head.trim());
+        if form == head || head.is_empty() {
+            return self.add(form, loc);
+        }
+        if let Some(key) = fold::index_key(form) {
+            self.items.push(Item { key, word: format!("{form}\0{head}"), loc });
         }
     }
 
@@ -192,8 +206,17 @@ impl Index {
         let len = u32::from_le_bytes(r[4..8].try_into().unwrap()) as usize;
         let a = u64::from_le_bytes(r[8..16].try_into().unwrap());
         let b = u64::from_le_bytes(r[16..24].try_into().unwrap());
-        let w = self.words.as_ref().get(off..off + len).unwrap_or(&[]);
-        Some((std::str::from_utf8(w).unwrap_or(""), Locator { a, b }))
+        let w = std::str::from_utf8(self.words.as_ref().get(off..off + len).unwrap_or(&[])).unwrap_or("");
+        Some((w.split_once('\0').map_or(w, |(form, _)| form), Locator { a, b }))
+    }
+
+    /// The headword of the entry `i` leads to: its own word, unless it is another form of one.
+    pub fn headword(&self, i: usize) -> Option<&str> {
+        let r = self.entries.as_ref().get(i * REC..(i + 1) * REC)?;
+        let off = u32::from_le_bytes(r[0..4].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(r[4..8].try_into().unwrap()) as usize;
+        let w = std::str::from_utf8(self.words.as_ref().get(off..off + len)?).ok()?;
+        Some(w.split_once('\0').map_or(w, |(_, head)| head))
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Group> {
@@ -373,6 +396,21 @@ mod tests {
         assert_eq!(fz.len(), 3);
         assert!(glob_match(&"a*e".chars().collect::<Vec<_>>(), &"apple".chars().collect::<Vec<_>>()));
         assert!(!glob_match(&"a?e".chars().collect::<Vec<_>>(), &"apple".chars().collect::<Vec<_>>()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn other_forms_open_under_their_headword() {
+        let d = tmpdir("forms");
+        let mut b = IndexBuilder::new();
+        b.add("rồ", Locator { a: 1, b: 0 });
+        b.add_form("roof", "rồ", Locator { a: 1, b: 0 });
+        b.add("roof", Locator { a: 2, b: 0 });
+        b.write(&d, "k").unwrap();
+        let idx = Index::open(&d, "k").unwrap();
+        let g = idx.get(&crate::fold::index_key("roof").unwrap()).unwrap();
+        let found: Vec<_> = g.range().map(|i| (idx.entry(i).unwrap().0, idx.headword(i).unwrap())).collect();
+        assert_eq!(found, vec![("roof", "rồ"), ("roof", "roof")]);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

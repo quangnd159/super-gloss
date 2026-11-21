@@ -65,7 +65,7 @@ pub fn build(ifo: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
         p = q + w + 4;
         let loc = Locator { a: off, b: size };
         b.add(&word, loc);
-        locs.push(loc);
+        locs.push((loc, word));
     }
     ctx.progress(0.6);
     if let Some(syn) = find_with_ext(&base, &["syn", "syn.dz"]) {
@@ -78,8 +78,8 @@ pub fn build(ifo: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
             }
             let word = String::from_utf8_lossy(&data[p..e]).into_owned();
             let i = be32(&data[e + 1..]) as usize;
-            if let Some(loc) = locs.get(i) {
-                b.add(&word, *loc);
+            if let Some((loc, head)) = locs.get(i) {
+                b.add_form(&word, head, *loc);
             }
             p = e + 5;
         }

@@ -71,6 +71,16 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Bumped when what this format's index or cached articles hold changes; its
+    /// dictionaries are then rebuilt, the others kept. (Babylon, StarDict 1: other
+    /// forms open under their entry's headword.)
+    pub fn revision(self) -> u32 {
+        match self {
+            Kind::Babylon | Kind::StarDict => 1,
+            _ => 0,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Kind::Mdict => "MDict",

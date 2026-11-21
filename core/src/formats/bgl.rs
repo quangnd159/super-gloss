@@ -458,12 +458,13 @@ pub fn build(path: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
                     let shown = e.display.as_deref().map(strip_html).filter(|s| !s.trim().is_empty());
                     let head = shown.clone().unwrap_or_else(|| e.headword.clone());
                     let loc = Locator { a: o, b: l };
-                    idx.add(&e.headword, loc);
+                    // Every key opens the entry under the headword it shows.
+                    idx.add_form(&e.headword, &head, loc);
                     if crate::fold::fold(&head) != crate::fold::fold(&e.headword) {
                         idx.add(&head, loc);
                     }
                     for a in &e.alternates {
-                        idx.add(a, loc);
+                        idx.add_form(a, &head, loc);
                     }
                     n += 1;
                     if n % 4096 == 0 {
