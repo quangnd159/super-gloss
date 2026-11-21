@@ -128,8 +128,9 @@ body.sg-foreign { -webkit-font-smoothing: antialiased; }
    16px Times. What they leave reads in the page's own voice instead; at zero
    specificity, so any choice a dictionary does make, on html, body or deeper, wins. */
 :where(html:has(> body.sg-foreign)) { font: 17px/1.5 "New York", ui-serif, Georgia, serif; }
-/* Pictures never run past the column. */
+/* Pictures never run past the column, nor do words too long for it (a URL, a formula). */
 :where(body.sg-foreign) :where(img, video) { max-width: 100%; }
+:where(body.sg-foreign) { overflow-wrap: break-word; }
 @media (prefers-color-scheme: dark) {
   html:has(> body.sg-foreign) { background: #fff; filter: invert(0.882) hue-rotate(180deg); }
   body.sg-foreign img, body.sg-foreign video, body.sg-foreign picture, body.sg-foreign canvas,

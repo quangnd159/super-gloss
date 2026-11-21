@@ -1,0 +1,3 @@
+<!-- Content that arrives late or expands on a click, as OALD's collapsible boxes do. -->
+<p>Before.</p><div id="late"></div>
+<script>setTimeout(() => { document.getElementById('late').innerHTML = '<p>' + 'Late content. '.repeat(80) + '</p>'; }, 150);</script>

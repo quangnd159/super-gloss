@@ -251,11 +251,91 @@
     else if (m.type === 'findCurrent') setCurrent(m.i);
   });
 
-  let last = -1;
-  const measure = () => {
-    const de = document.documentElement;
+  // ---------- viewport units ----------
+  // The frame is as tall as its content, so a height in vh is measured against the content
+  // that holds it: each height reported grows the next, without end. And vw spans the
+  // gutters on both sides of the column (article.css). Where either shows, the
+  // dictionary's viewport units are rewritten to the window's height and the column's
+  // width, what they meant where it was made. Nothing is walked until then.
+  const UNITS = /(-?(?:\d+\.?\d*|\.\d+))(?:s|l|d)?(vh|vw|vmin|vmax|vb|vi)\b/g;
+  const HAS_UNITS = /\d(?:s|l|d)?(?:vh|vw|vmin|vmax|vb|vi)\b/;
+  const AXIS = { vb: 'vh', vi: 'vw' };
+  const pinned = new WeakSet();
+  let pinnedInline = false;
+  let unitsPinned = false;
+  const pinStyle = (style) => {
+    const props = [];
+    for (let i = 0; i < style.length; i++) if (HAS_UNITS.test(style.getPropertyValue(style[i]))) props.push(style[i]);
+    for (const p of props) {
+      const v = style.getPropertyValue(p).replace(UNITS, (_, n, u) => `calc(${n} * var(--sg-${AXIS[u] || u}))`);
+      style.setProperty(p, v, style.getPropertyPriority(p));
+    }
+    return props.length;
+  };
+  const pinRules = (rules) => {
+    let n = 0;
+    for (const r of rules) {
+      if (r.style) n += pinStyle(r.style);
+      if (r.cssRules) n += pinRules(r.cssRules);
+      if (r.styleSheet) n += pinSheet(r.styleSheet); // @import
+    }
+    return n;
+  };
+  const pinSheet = (s) => {
+    if (pinned.has(s)) return 0;
+    pinned.add(s);
+    try { return pinRules(s.cssRules); } catch (_) { return 0; } // another origin's, or ours
+  };
+  const sizeUnits = () => {
     const b = document.body;
-    const h = Math.ceil(Math.max(de.getBoundingClientRect().height, b ? b.scrollHeight : 0));
+    const cs = getComputedStyle(b);
+    const vw = (b.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) / 100;
+    const vh = (window.outerHeight || screen.availHeight) / 100;
+    const root = document.documentElement.style;
+    root.setProperty('--sg-vw', vw + 'px');
+    root.setProperty('--sg-vh', vh + 'px');
+    root.setProperty('--sg-vmin', Math.min(vw, vh) + 'px');
+    root.setProperty('--sg-vmax', Math.max(vw, vh) + 'px');
+  };
+  // Whether anything was rewritten.
+  const pinUnits = () => {
+    let n = 0;
+    for (const s of document.styleSheets) n += pinSheet(s);
+    if (!pinnedInline) {
+      pinnedInline = true;
+      for (const e of document.querySelectorAll('[style]')) n += pinStyle(e.style);
+    }
+    if (n) unitsPinned = true;
+    if (unitsPinned) sizeUnits();
+    return n > 0;
+  };
+
+  const height = () => Math.ceil(Math.max(document.documentElement.getBoundingClientRect().height,
+    document.body ? document.body.scrollHeight : 0));
+  let last = -1;
+  // Times in a row the content outgrew the height it was just fitted to. Past two,
+  // something other than a style follows the viewport (a script sizing to it): hold.
+  let feedback = 0;
+  let frameW = window.innerWidth;
+  window.addEventListener('resize', () => {
+    if (window.innerWidth !== frameW) {
+      frameW = window.innerWidth;
+      if (unitsPinned) sizeUnits();
+    } else if (window.innerHeight === last) {
+      if (height() > last) {
+        pinUnits();
+        if (height() > last) feedback++;
+      } else {
+        feedback = 0;
+      }
+    }
+  });
+
+  const measure = () => {
+    const b = document.body;
+    if (b && b.scrollWidth > b.clientWidth) pinUnits();
+    let h = height();
+    if (feedback > 2) h = Math.min(h, window.innerHeight);
     if (h !== last) {
       last = h;
       post({ type: 'height', h });

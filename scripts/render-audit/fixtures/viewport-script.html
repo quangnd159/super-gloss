@@ -1,0 +1,6 @@
+<!-- A script that sizes a box to the window, again on every resize. -->
+<div id="fill">sized by script to innerHeight</div>
+<script>
+  const fill = () => { document.getElementById('fill').style.height = innerHeight + 'px'; };
+  addEventListener('resize', fill); fill();
+</script>
