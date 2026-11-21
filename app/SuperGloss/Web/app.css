@@ -8,6 +8,8 @@
   --accent: #c4471b;
   --gloss-w: 140px;
   --col-w: 700px;
+  /* How far article frames reach past the column; article.css pads them back by as much. */
+  --bleed: 16px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -120,7 +122,8 @@ body.finding .src.nofind .tag, body.finding #index .row.nofind { opacity: 0.3; }
 }
 iframe {
   display: block;
-  width: 100%;
+  width: calc(100% + 2 * var(--bleed));
+  margin: 0 calc(-1 * var(--bleed));
   height: 0;
   border: 0;
   background: transparent;

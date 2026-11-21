@@ -16,7 +16,11 @@ html, body {
   min-height: 0 !important;
   overflow-y: hidden !important;
 }
-body { overflow-x: auto; padding-bottom: 2px; }
+/* The frame reaches into a gutter on both sides of the column (app.css: --bleed) and
+   the text sits back on the column's line. What spills by a few pixels (a box at
+   width: 100% plus its border, a hanging negative margin) paints into the gutter
+   instead of scrolling; only real overflow, a table wider than the column, scrolls. */
+body { overflow-x: auto; padding: 0 16px 2px !important; }
 
 /* ---------- native typography ---------- */
 :root:has(body.sg-native) { color-scheme: light dark; }
@@ -120,6 +124,12 @@ abbr.dsl-p, abbr.x-abr {
 
 /* ---------- foreign: keep the dictionary's design, invert in dark mode ---------- */
 body.sg-foreign { -webkit-font-smoothing: antialiased; }
+/* Most dictionaries leave the face and size to their host, and WebKit's default is
+   16px Times. What they leave reads in the page's own voice instead; at zero
+   specificity, so any choice a dictionary does make, on html, body or deeper, wins. */
+:where(html:has(> body.sg-foreign)) { font: 17px/1.5 "New York", ui-serif, Georgia, serif; }
+/* Pictures never run past the column. */
+:where(body.sg-foreign) :where(img, video) { max-width: 100%; }
 @media (prefers-color-scheme: dark) {
   html:has(> body.sg-foreign) { background: #fff; filter: invert(0.882) hue-rotate(180deg); }
   body.sg-foreign img, body.sg-foreign video, body.sg-foreign picture, body.sg-foreign canvas,
