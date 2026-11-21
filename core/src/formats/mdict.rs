@@ -219,8 +219,8 @@ impl MdictFile {
         let w = self.width;
         let mut kbi = read_at(&self.file, start, kbi_size as usize)?;
         if self.v2 {
-            if kbi.len() < 8 || kbi[0..4] != [2, 0, 0, 0] {
-                bail!("unexpected key-block-info compression");
+            if kbi.len() < 8 {
+                bail!("short key-block info");
             }
             if self.encrypted & 2 != 0 {
                 let mut k = kbi[4..8].to_vec();
@@ -228,7 +228,8 @@ impl MdictFile {
                 let key = ripemd128(&k);
                 fast_decrypt(&mut kbi[8..], &key);
             }
-            kbi = inflate_zlib(&kbi[8..], kbi_decomp as usize)?;
+            // Framed like any block: zlib as a rule, but stored or LZO where the packer chose so.
+            kbi = decode_block(&kbi, kbi_decomp as usize)?;
         }
         let utf16 = self.enc == Enc::Utf16;
         let mut c = Cursor::new(&kbi);

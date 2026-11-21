@@ -251,6 +251,50 @@
     else if (m.type === 'findCurrent') setCurrent(m.i);
   });
 
+  // ---------- direction ----------
+  // Arabic, Hebrew and Persian read right to left. An entry takes the direction most of
+  // its letters have; inside it, a paragraph of some length in the other direction turns,
+  // a lone word (a headword, a gloss) keeps the entry's. Where a dictionary says (dir),
+  // it is left alone.
+  const RTL_SCRIPT = /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/gu;
+  const orient = () => {
+    const letters = new Map(); // block → [right-to-left, other]
+    const add = (map, k, [r, o]) => {
+      const c = map.get(k) || map.set(k, [0, 0]).get(k);
+      c[0] += r;
+      c[1] += o;
+    };
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const p = n.parentElement;
+      const block = p && !SKIP.has(p.tagName) && p.closest(BLOCKS);
+      if (!block) continue;
+      const all = (n.data.match(/\p{L}/gu) || []).length;
+      if (!all) continue;
+      const rtl = (n.data.match(RTL_SCRIPT) || []).length;
+      add(letters, block, [rtl, all - rtl]);
+    }
+    const ruled = (b) => b.closest('[dir]');
+    const entries = new Map();
+    for (const [b, c] of letters) add(entries, b.closest('.sg-entry') || document.body, c);
+    const dir = new Map();
+    for (const [e, [r, o]] of entries) if (!ruled(e)) dir.set(e, r > o ? 'rtl' : 'ltr');
+    // Ancestors before descendants, so each block knows the direction it inherits.
+    const blocks = [...letters.keys()].filter((b) => !dir.has(b) && !ruled(b))
+      .sort((x, y) => (x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    for (const [e, d] of dir) if (d === 'rtl') e.dir = d;
+    for (const b of blocks) {
+      const [r, o] = letters.get(b);
+      let up = b.parentElement;
+      while (up && !dir.has(up)) up = up.parentElement;
+      const inherited = up ? dir.get(up) : 'ltr';
+      const own = r + o >= 16 ? (r > o ? 'rtl' : 'ltr') : inherited;
+      dir.set(b, own);
+      if (own !== inherited) b.dir = own;
+    }
+  };
+  if (document.body && new RegExp(RTL_SCRIPT.source, 'u').test(document.body.textContent)) orient();
+
   // ---------- viewport units ----------
   // The frame is as tall as its content, so a height in vh is measured against the content
   // that holds it: each height reported grows the next, without end. And vw spans the

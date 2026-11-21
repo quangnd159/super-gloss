@@ -389,7 +389,7 @@ fn open_for(name: &str) -> Option<&'static str> {
         "div" => "<div>",
         "p" => "<p>",
         "def" => "<div class=\"x-def\">",
-        "abr" => "<abbr class=\"x-abr\">",
+        "abr" | "abbr" => "<abbr class=\"x-abr\">",
         "ex" => "<span class=\"x-ex\">",
         "co" => "<span class=\"x-co\">",
         "dtrn" => "<span class=\"x-dtrn\">",
@@ -401,7 +401,8 @@ fn open_for(name: &str) -> Option<&'static str> {
         "etm" => "<span class=\"x-etm\">",
         "categ" => "<span class=\"x-categ\">",
         "sr" | "syn" | "ant" | "hpr" | "hpn" | "mer" | "par" | "rel" => "<span class=\"x-rel\">",
-        "deftext" | "ex_orig" | "ex_tran" | "mrkd" | "di" | "span" => "<span>",
+        "ex_tran" => "<span class=\"x-ext\">",
+        "deftext" | "ex_orig" | "mrkd" | "di" | "span" => "<span>",
         "ul" => "<ul>",
         "ol" => "<ol>",
         "li" => "<li>",
@@ -421,7 +422,7 @@ fn close_for(name: &str) -> Option<&'static str> {
         "small" => "</small>",
         "blockquote" | "div" | "def" => "</div>",
         "p" => "</p>",
-        "abr" => "</abbr>",
+        "abr" | "abbr" => "</abbr>",
         "c" | "big" | "ex" | "co" | "dtrn" | "tr" | "opt" | "pos" | "gr" | "tense" | "etm" | "categ" | "sr" | "syn"
         | "ant" | "hpr" | "hpn" | "mer" | "par" | "rel" | "deftext" | "ex_orig" | "ex_tran" | "mrkd" | "di"
         | "span" => "</span>",

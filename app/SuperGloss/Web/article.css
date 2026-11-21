@@ -113,11 +113,28 @@ abbr.dsl-p, abbr.x-abr {
 .x-co { color: var(--muted); }
 .x-opt { color: var(--soft); }
 .x-big { font-size: 1.15em; }
-.x-dtrn { }
+/* XDXF's logical format: senses nest and number themselves where there is more than one
+   (I. for parts of speech, 1. for senses, a) below), translations stand out, and an
+   example's translation follows it after a dash. */
+.x-def { display: block; position: relative; }
+.sg-entry { counter-reset: xd1; }
+.sg-entry > .x-def { counter-increment: xd1; counter-reset: xd2; }
+.sg-entry > .x-def + .x-def { margin-top: 0.5em; }
+.x-def > .x-def { counter-increment: xd2; counter-reset: xd3; margin: 0.15em 0 0.15em 1.6em; }
+.x-def > .x-def > .x-def { counter-increment: xd3; counter-reset: none; }
+.x-def:is(:has(~ .x-def), .x-def ~ .x-def)::before { color: var(--muted); font-variant-numeric: tabular-nums; }
+.sg-entry > .x-def:is(:has(~ .x-def), .x-def ~ .x-def)::before { content: counter(xd1, upper-roman) ". "; font-weight: 600; }
+.x-def > .x-def:is(:has(~ .x-def), .x-def ~ .x-def)::before { content: counter(xd2) "."; position: absolute; right: 100%; margin-right: 0.45em; }
+.x-def > .x-def > .x-def:is(:has(~ .x-def), .x-def ~ .x-def)::before { content: counter(xd3, lower-alpha) ")"; }
+.x-def :is(.x-gr, .x-pos) { color: var(--accent); font-style: italic; }
+.x-def .x-dtrn { font-weight: 600; }
+.x-ext::before { content: "— "; }
+.x-etm { display: block; margin-top: 0.6em; color: var(--muted); }
+.x-categ { color: var(--soft); font-variant: small-caps; }
 .sd-m { white-space: pre-wrap; }
 
-/* dictd */
-.dictd { white-space: pre-wrap; font: 13.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+/* dictd: plain text, its lines and indents kept, in the page's face */
+.dictd { white-space: pre-wrap; tab-size: 4; }
 
 /* Babylon part of speech */
 .bgl-pos { color: var(--accent); font-style: italic; }

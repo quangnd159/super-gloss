@@ -92,22 +92,42 @@ pub fn open(path: &Path, cache: &Path, _info: &DictInfo) -> Result<Box<dyn Reade
     Ok(Box::new(DictdReader { data: Source::open(&data_p, cache, "dict", false)? }))
 }
 
-/// Renders dictd plain text: drops a leading line repeating the headword and turns
-/// `{word}` cross-references into links.
-pub fn render_plain(text: &str, word: &str) -> String {
-    let mut lines: Vec<&str> = text.lines().collect();
-    if let Some(first) = lines.first() {
-        if crate::fold::fold(first.trim()) == crate::fold::fold(word) {
-            lines.remove(0);
-        }
+/// The entry's text without a leading line that repeats the headword.
+fn body<'a>(text: &'a str, word: &str) -> &'a str {
+    let text = text.trim_start_matches(['\n', '\r']);
+    let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+    let rest = if crate::fold::fold(first.trim()) == crate::fold::fold(word) { rest } else { text };
+    let blank = rest.lines().take_while(|l| l.trim().is_empty()).map(|l| l.len() + 1).sum::<usize>();
+    rest.get(blank..).unwrap_or("").trim_end()
+}
+
+/// Whether a dictd entry holds HTML, as converters such as PyGlossary write it: closing
+/// tags or line breaks, not grammar in angle brackets ("<neut, n, sg>").
+fn is_html(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    ["</div>", "</p>", "</b>", "</i>", "</font>", "</span>", "</a>", "<br>", "<br/>", "<br />"].iter().any(|m| t.contains(m))
+}
+
+/// Renders a dictd entry: HTML as it is, plain text with `{word}` cross-references as links.
+pub fn render(text: &str, word: &str) -> String {
+    let body = body(text, word);
+    if is_html(body) {
+        return format!("<div class=\"dictd-html\">{}</div>", super::markup::normalize_links(body));
     }
-    while lines.first().is_some_and(|l| l.trim().is_empty()) {
-        lines.remove(0);
-    }
-    let body = lines.join("\n");
-    let mut out = String::with_capacity(body.len() + 64);
-    out.push_str("<div class=\"dictd\">");
+    // The indent every line shares goes; the indents between them stay.
+    let indent = body.lines().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start().len()).min().unwrap_or(0);
+    let body: String = body.lines().map(|l| l.get(indent..).unwrap_or(l.trim_start())).collect::<Vec<_>>().join("\n");
+    let mut out = String::with_capacity(body.len() + 96);
+    // A first line that opens with the headword ("Kuwait /k'u:vaɪt/ <neut, n, sg>") gives it
+    // to the entry's heading and keeps the rest.
     let mut rest = body.as_str();
+    if let Some(after) = rest.strip_prefix(word.trim()).filter(|a| a.starts_with([' ', '\t'])) {
+        out.push_str("<h1 class=\"sg-hw\">");
+        html_escape_into(&mut out, word.trim());
+        out.push_str("</h1>");
+        rest = after.trim_start_matches([' ', '\t']);
+    }
+    out.push_str("<div class=\"dictd\">");
     while let Some(o) = rest.find('{') {
         let Some(c) = rest[o..].find('}') else { break };
         let inner = &rest[o + 1..o + c];
@@ -133,7 +153,7 @@ pub fn render_plain(text: &str, word: &str) -> String {
 impl Reader for DictdReader {
     fn article(&self, _index: &Index, word: &str, loc: Locator) -> Result<String> {
         let raw = self.data.read(loc.a, loc.b)?;
-        Ok(render_plain(&String::from_utf8_lossy(&raw), word))
+        Ok(render(&String::from_utf8_lossy(&raw), word))
     }
     fn resource(&self, _path: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
@@ -156,7 +176,12 @@ mod tests {
     }
     #[test]
     fn plain() {
-        let h = render_plain("apple\n  A fruit. See {pear}.\n", "apple");
-        assert_eq!(h, "<div class=\"dictd\">  A fruit. See <a class=\"dictd-ref\" href=\"entry://pear\">pear</a>.</div>");
+        let h = render("apple\n  A fruit. See {pear}.\n", "apple");
+        assert_eq!(h, "<div class=\"dictd\">A fruit. See <a class=\"dictd-ref\" href=\"entry://pear\">pear</a>.</div>");
+        assert_eq!(render("w\n  n 1: one\n       two\n", "w"), "<div class=\"dictd\">n 1: one\n     two</div>");
+        assert!(render("Haus\n  house <neut, n, sg>", "Haus").starts_with("<div class=\"dictd\">"));
+        assert_eq!(render("Kuwait /k'u:vaɪt/ <n>\n[geogr.] Kuwait", "Kuwait"),
+            "<h1 class=\"sg-hw\">Kuwait</h1><div class=\"dictd\">/k&#39;u:vaɪt/ &lt;n&gt;\n[geogr.] Kuwait</div>");
+        assert!(render("A\n<div>first letter</div>", "A").starts_with("<div class=\"dictd-html\"><div>first"));
     }
 }
