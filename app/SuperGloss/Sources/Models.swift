@@ -18,7 +18,7 @@ struct DictSummary: Codable, Identifiable, Hashable, Sendable {
     var isReady: Bool { state == "ready" }
     var isBusy: Bool { state == "pending" || state == "indexing" }
 
-    /// A compact name for the margin: drops language tags, editions and versions.
+    /// A compact name for bylines and ⌘J's list: drops language tags, editions and versions.
     var shortName: String { Self.shorten(name) }
 
     static func shorten(_ name: String) -> String {
@@ -93,4 +93,10 @@ enum HomeItem: Hashable, Sendable {
     case saved(String)
     case more
     case recent(String)
+}
+
+/// The entry the reader is on: its dictionary's short name, and whether it is hidden.
+struct CurrentEntry: Equatable {
+    let name: String
+    let hidden: Bool
 }

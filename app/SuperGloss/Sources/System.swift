@@ -63,20 +63,24 @@ final class HotKey {
     private var ref: EventHotKeyRef?
     private var handler: EventHandlerRef?
     var action: (() -> Void)?
+    /// The chosen shortcut is held by another app, so it does nothing here.
+    private(set) var taken = false
 
     func register(_ preset: HotKeyPreset) {
         if let ref { UnregisterEventHotKey(ref) }
         ref = nil
+        taken = false
         guard let combo = preset.combo else { return }
         if handler == nil {
             var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            // Carbon calls this on the main thread.
             InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-                DispatchQueue.main.async { MainActor.assumeIsolated { HotKey.shared.action?() } }
+                MainActor.assumeIsolated { HotKey.shared.action?() }
                 return noErr
             }, 1, &spec, nil, &handler)
         }
         let id = EventHotKeyID(signature: OSType(0x5347_4C53), id: 1) // 'SGLS'
-        RegisterEventHotKey(combo.key, combo.modifiers, id, GetApplicationEventTarget(), 0, &ref)
+        taken = RegisterEventHotKey(combo.key, combo.modifiers, id, GetApplicationEventTarget(), 0, &ref) != noErr
     }
 }
 
@@ -110,15 +114,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
         HotKey.shared.action = { AppDelegate.toggleMainWindow() }
         HotKey.shared.register(AppModel.shared.prefs.hotKey)
-        // ⌥⌘↑/↓ step between sources wherever focus is. Arrow-key equivalents in SwiftUI
-        // menus don't match reliably (the function-key flag), so route them here.
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        // ⌥⌘↑/↓ step between sources and ⌥⌘←/→ hide and show one, wherever focus is.
+        // Arrow-key equivalents in SwiftUI menus don't match reliably (the function-key
+        // flag), so route them here. A mouse's side buttons go back and forward, as in a browser.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .otherMouseDown]) { event in
+            guard event.window?.identifier?.rawValue.hasPrefix("main") == true else { return event }
+            if event.type == .otherMouseDown {
+                let button = event.buttonNumber
+                guard button == 3 || button == 4 else { return event }
+                MainActor.assumeIsolated {
+                    if button == 3 { AppModel.shared.goBack() } else { AppModel.shared.goForward() }
+                }
+                return nil
+            }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
             let code = event.keyCode
-            guard mods == [.command, .option], code == 125 || code == 126,
-                  event.window?.identifier?.rawValue.hasPrefix("main") == true
-            else { return event }
-            MainActor.assumeIsolated { AppModel.shared.article?.jump(code == 125 ? 1 : -1) }
+            guard mods == [.command, .option] else { return event }
+            switch code {
+            case 125, 126: MainActor.assumeIsolated { AppModel.shared.stepSource(code == 125 ? 1 : -1) }
+            case 123, 124: MainActor.assumeIsolated { AppModel.shared.hideCurrent(code == 123) }
+            default: return event
+            }
             return nil
         }
         Updater.shared.start()
@@ -141,11 +157,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for url in urls {
             if url.scheme == "supergloss" {
                 let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                // supergloss://lookup?q=cat, supergloss://lookup/cat or supergloss://cat
+                let path = url.path.removingPercentEncoding?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
                 let word = comps?.queryItems?.first { $0.name == "q" || $0.name == "word" }?.value
-                    ?? (url.host.map { $0 + url.path } ?? url.path).removingPercentEncoding?
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                if let w = word, !w.isEmpty, w != "lookup" {
-                    AppModel.shared.lookUpExternally(w)
+                    ?? (url.host == "lookup" ? path : [url.host?.removingPercentEncoding ?? "", path].filter { !$0.isEmpty }.joined(separator: "/"))
+                if !word.isEmpty, word != "lookup" {
+                    AppModel.shared.lookUpExternally(word)
                     AppDelegate.summon()
                 }
             } else if url.isFileURL {

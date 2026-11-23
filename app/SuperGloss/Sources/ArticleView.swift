@@ -14,7 +14,6 @@ struct ArticleView: NSViewRepresentable {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.setURLSchemeHandler(c, forURLScheme: "sgloss")
-        config.suppressesIncrementalRendering = false
         config.preferences.isElementFullscreenEnabled = false
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         let ucc = config.userContentController
@@ -30,6 +29,7 @@ struct ArticleView: NSViewRepresentable {
         web.allowsBackForwardNavigationGestures = false
         web.allowsMagnification = false
         web.pageZoom = model.zoom
+        web.lookUp = { [weak model] w in model?.commit(w) }
         c.web = web
         model.article = c
         web.load(URLRequest(url: URL(string: "sgloss://app/index.html")!))
@@ -40,12 +40,18 @@ struct ArticleView: NSViewRepresentable {
 }
 
 /// WKWebView without browser affordances: no file drops (the window handles
-/// dictionary drops), no reload/navigation menu items.
+/// dictionary drops), no reload/navigation menu items. Its right-click menu opens with
+/// looking up the word under the pointer here, in place of the system's dictionary.
 final class ArticleWebView: WKWebView {
+    /// The word the page offered as the right-click landed; see frame.js.
+    var menuWord = ""
+    var lookUp: ((String) -> Void)?
+
     override func registerForDraggedTypes(_ newTypes: [NSPasteboard.PasteboardType]) {}
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         let drop: Set<String> = [
+            "WKMenuItemIdentifierLookUp",
             "WKMenuItemIdentifierReload", "WKMenuItemIdentifierGoBack", "WKMenuItemIdentifierGoForward",
             "WKMenuItemIdentifierOpenLinkInNewWindow", "WKMenuItemIdentifierDownloadLinkedFile",
             "WKMenuItemIdentifierOpenFrameInNewWindow", "WKMenuItemIdentifierOpenImageInNewWindow",
@@ -55,7 +61,23 @@ final class ArticleWebView: WKWebView {
         menu.items.removeAll { drop.contains($0.identifier?.rawValue ?? "") }
         while menu.items.first?.isSeparatorItem == true { menu.removeItem(at: 0) }
         while menu.items.last?.isSeparatorItem == true { menu.removeItem(at: menu.items.count - 1) }
+        if !menuWord.isEmpty {
+            let item = NSMenuItem(title: "Look Up “\(menuWord)”", action: #selector(lookUpMenuWord(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = menuWord
+            if !menu.items.isEmpty { menu.insertItem(.separator(), at: 0) }
+            menu.insertItem(item, at: 0)
+        }
         super.willOpenMenu(menu, with: event)
+    }
+
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        super.didCloseMenu(menu, with: event)
+        menuWord = ""
+    }
+
+    @objc private func lookUpMenuWord(_ sender: NSMenuItem) {
+        if let w = sender.representedObject as? String { lookUp?(w) }
     }
 }
 
@@ -75,7 +97,6 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
     let model: AppModel
     weak var web: WKWebView?
     private var loaded = false
-    private var queued: String?
     private var active: [ObjectIdentifier: any WKURLSchemeTask] = [:]
 
     init(model: AppModel) { self.model = model }
@@ -116,10 +137,18 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
     }
 
     func jump(_ direction: Int) { run("sg.jump(\(direction))") }
-    func page(_ direction: Int) { run("sg.page(\(direction))") }
+    func scroll(with key: NSEvent) {
+        if key.type == .keyUp {
+            web?.keyUp(with: key)
+        } else {
+            run("sg.cancelHold()") // the reader takes over from a position being held
+            web?.keyDown(with: key)
+        }
+    }
     func pronounce() { run("sg.pronounce() || null") }
     func setZoom(_ zoom: Double) { web?.pageZoom = zoom }
     func setIcons(_ on: Bool) { run("sg.icons(\(on))") }
+    func hideCurrent(_ hide: Bool) { run("sg.hideCurrent(\(hide))") }
 
     func find(_ query: String) { run("sg.find(\(Self.literal(query)))") }
 
@@ -138,11 +167,9 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         return "\(json)[0]"
     }
 
+    /// Calls before the page has loaded are dropped: once it has, it shows what is current.
     private func run(_ js: String) {
-        guard loaded else {
-            if js.hasPrefix("sg.show") || js.hasPrefix("window.sg && sg.clear") { queued = js }
-            return
-        }
+        guard loaded else { return }
         web?.evaluateJavaScript(js, completionHandler: nil)
     }
 
@@ -150,13 +177,15 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        // Only the app's own page speaks for the reader. An entry's scripts reach this handler
+        // too; all they may say is which word a right-click is on.
+        guard type == "menu" || (message.frameInfo.isMainFrame && message.frameInfo.securityOrigin.host == "app") else { return }
         switch type {
         case "loaded":
+            // First load, a reopened window, or a reload after WebKit's process quit.
             loaded = true
-            if let q = queued {
-                queued = nil
-                web?.evaluateJavaScript(q, completionHandler: nil)
-            }
+            let (result, landing) = model.pageLoaded()
+            show(result, dictionaries: model.dictionaries, landing: landing)
         case "lookup":
             if let w = body["word"] as? String, !w.isEmpty { model.commit(w) }
         case "find":
@@ -175,11 +204,18 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         case "sound":
             if let d = body["dict"] as? String, let p = body["path"] as? String { model.audio.play(dict: d, path: p) }
         case "open":
+            // Only from a click: an entry's script can't send the reader to the web by itself.
+            guard let e = NSApp.currentEvent, e.type == .leftMouseUp || e.type == .leftMouseDown,
+                  ProcessInfo.processInfo.systemUptime - e.timestamp < 1 else { break }
             if let s = body["url"] as? String, let u = URL(string: s), ["http", "https", "mailto"].contains(u.scheme?.lowercased() ?? "") {
                 NSWorkspace.shared.open(u)
             }
         case "key":
             if let k = body["key"] as? String { model.typed(k) }
+        case "menu":
+            (web as? ArticleWebView)?.menuWord = body["word"] as? String ?? ""
+        case "current":
+            model.current = (body["name"] as? String).map { CurrentEntry(name: $0, hidden: body["hidden"] as? Bool ?? false) }
         case "index":
             model.noteIndex(open: body["open"] as? Bool ?? false, name: body["name"] as? String ?? "",
                             matches: body["matches"] as? Int ?? 0, total: body["total"] as? Int ?? 0)
@@ -239,12 +275,6 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         loaded = false
         loadedShell = false
         webView.load(URLRequest(url: URL(string: "sgloss://app/index.html")!))
-        let shown = model.shown
-        queued = nil
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(300))
-            self.show(shown, dictionaries: self.model.dictionaries, landing: nil)
-        }
     }
 
     // MARK: sgloss:// scheme
@@ -259,22 +289,31 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         let engine = model.engine
         let iconPath: String? = url.host == "app" && url.path.hasPrefix("/icon/")
             ? model.dictionaries.first { $0.id == url.lastPathComponent }?.icon : nil
-        Task {
-            let served: Engine.Served? = await Task.detached(priority: .userInitiated) {
-                if url.host == "app" {
-                    return AppResources.serve(path: url.path, iconPath: iconPath)
-                }
-                return engine.serve(url.absoluteString)
-            }.value
-            guard let task = self.active.removeValue(forKey: key) else { return }
-            let status = served == nil ? 404 : 200
-            var headers = ["Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"]
-            headers["Content-Type"] = served?.mime ?? "text/plain"
-            let resp = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
-            task.didReceive(resp)
-            task.didReceive(served?.data ?? Data())
-            task.didFinish()
+        // A queue of its own: an entry's many pictures and sounds never hold up the
+        // lookups that typing waits on.
+        Self.serving.async {
+            let app = url.host == "app"
+            let served = app ? AppResources.serve(path: url.path, iconPath: iconPath) : engine.serve(url.absoluteString)
+            Task { @MainActor in self.finish(key, url: url, served: served, app: app) }
         }
+    }
+
+    private static let serving = DispatchQueue(label: "app.supergloss.serve", qos: .userInitiated, attributes: .concurrent)
+
+    private func finish(_ key: ObjectIdentifier, url: URL, served: Engine.Served?, app: Bool) {
+        guard let task = active.removeValue(forKey: key) else { return }
+        var headers = [
+            "Content-Type": served?.mime ?? "text/plain",
+            "Access-Control-Allow-Origin": "*",
+            // The app's own files can't change while it runs.
+            "Cache-Control": app ? "max-age=31536000, immutable" : "no-cache",
+        ]
+        // An entry may run its own scripts, but nothing it does reaches the network.
+        if !app { headers["Content-Security-Policy"] = "connect-src sgloss: data: blob:" }
+        let resp = HTTPURLResponse(url: url, statusCode: served == nil ? 404 : 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+        task.didReceive(resp)
+        task.didReceive(served?.data ?? Data())
+        task.didFinish()
     }
 
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {
@@ -285,6 +324,8 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
 /// Files bundled with the app and dictionary icons, served at `sgloss://app/…`.
 enum AppResources {
     nonisolated(unsafe) private static let iconCache = NSCache<NSString, NSData>()
+    /// Every frame asks for article.css; it is read from disk once.
+    nonisolated(unsafe) private static let fileCache = NSCache<NSString, NSData>()
 
     static func serve(path: String, iconPath: String?) -> Engine.Served? {
         if path.hasPrefix("/icon/") {
@@ -295,7 +336,14 @@ enum AppResources {
         guard !rel.isEmpty, !rel.contains(".."),
               let base = Bundle.main.resourceURL?.appendingPathComponent("Web", isDirectory: true) else { return nil }
         let url = base.appendingPathComponent(rel)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        let data: Data
+        if let hit = fileCache.object(forKey: rel as NSString) {
+            data = hit as Data
+        } else {
+            guard let read = try? Data(contentsOf: url) else { return nil }
+            fileCache.setObject(read as NSData, forKey: rel as NSString)
+            data = read
+        }
         let mime: String
         switch url.pathExtension.lowercased() {
         case "html": mime = "text/html; charset=utf-8"

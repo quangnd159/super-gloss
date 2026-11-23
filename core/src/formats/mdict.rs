@@ -4,8 +4,8 @@
 
 use super::{BuildCtx, DictInfo, Reader};
 use crate::index::{Index, IndexBuilder, Locator};
-use crate::store::inflate_zlib;
-use crate::util::{read_at, unescape_entities, BlockCache, Cursor};
+use crate::store::{inflate_zlib, plausible_size};
+use crate::util::{file_below, read_at, unescape_entities, BlockCache, Cursor};
 use anyhow::{bail, Context, Result};
 use ripemd::{Digest, Ripemd128};
 use std::collections::HashMap;
@@ -29,6 +29,7 @@ struct RecordBlock {
 
 pub struct MdictFile {
     file: File,
+    len: u64,
     pub attrs: HashMap<String, String>,
     width: usize,
     v2: bool,
@@ -38,6 +39,16 @@ pub struct MdictFile {
     blocks: Vec<RecordBlock>,
     records_total: u64,
     cache: BlockCache,
+}
+
+/// The key section's header, its sizes checked against the file.
+struct KeyHeader {
+    blocks: u64,
+    info_decomp: u64,
+    info_size: u64,
+    blocks_size: u64,
+    /// Where the key-block info starts; the key blocks follow it, then the records.
+    start: u64,
 }
 
 fn parse_attrs(header: &str) -> HashMap<String, String> {
@@ -71,11 +82,19 @@ fn fast_decrypt(data: &mut [u8], key: &[u8]) {
     }
 }
 
-/// Decodes an MDict compressed block: 4-byte info (LE), 4-byte adler32, payload.
-fn decode_block(block: &[u8], decomp_size: usize) -> Result<Vec<u8>> {
+/// Real blocks hold kilobytes to a few megabytes.
+const MAX_BLOCK: u64 = 64 << 20;
+
+/// Decodes an MDict compressed block (4-byte info (LE), 4-byte adler32, payload) that
+/// must hold exactly `size` bytes.
+fn decode_block(block: &[u8], size: u64) -> Result<Vec<u8>> {
     if block.len() < 8 {
         bail!("short block");
     }
+    if size > MAX_BLOCK || !plausible_size(block.len() as u64, size) {
+        bail!("a block of {} bytes can't hold {size}", block.len());
+    }
+    let size = size as usize;
     let info = u32::from_le_bytes(block[0..4].try_into().unwrap());
     let comp = info & 0xf;
     let enc_method = (info >> 4) & 0xf;
@@ -90,12 +109,16 @@ fn decode_block(block: &[u8], decomp_size: usize) -> Result<Vec<u8>> {
         }
         m => bail!("unsupported MDict block encryption {m}"),
     }
-    match comp {
-        0 => Ok(data),
-        1 => lzokay_native::decompress_all(&data, Some(decomp_size)).map_err(|e| anyhow::anyhow!("LZO: {e:?}")),
-        2 => inflate_zlib(&data, decomp_size),
+    let out = match comp {
+        0 => data,
+        1 => lzokay_native::decompress_all_bounded(&data, size).map_err(|e| anyhow::anyhow!("LZO: {e:?}"))?,
+        2 => inflate_zlib(&data, size)?,
         c => bail!("unsupported MDict compression {c}"),
+    };
+    if out.len() != size {
+        bail!("block holds {} bytes, not {size}", out.len());
     }
+    Ok(out)
 }
 
 impl MdictFile {
@@ -143,6 +166,7 @@ impl MdictFile {
         let key_section = 4 + hlen + 4;
         let mut m = MdictFile {
             file,
+            len: flen,
             attrs,
             width,
             v2,
@@ -153,29 +177,31 @@ impl MdictFile {
             records_total: 0,
             cache: BlockCache::new(12),
         };
-        m.read_record_table(flen)?;
+        m.read_record_table()?;
         Ok(m)
     }
 
-    fn key_header(&self) -> Result<(u64, u64, u64, u64, u64)> {
-        // (num_key_blocks, num_entries, kbi_decomp, kbi_size, kb_size, data start)
+    fn key_header(&self) -> Result<KeyHeader> {
         let w = self.width;
         let n = if self.v2 { 5 } else { 4 };
         let raw = read_at(&self.file, self.key_section, n * w)?;
         let mut c = Cursor::new(&raw);
-        let num_blocks = c.num(w)?;
-        let _num_entries = c.num(w)?;
-        let kbi_decomp = if self.v2 { c.num(w)? } else { 0 };
-        let kbi_size = c.num(w)?;
-        let kb_size = c.num(w)?;
+        let blocks = c.num(w)?;
+        let _entries = c.num(w)?;
+        let info_decomp = if self.v2 { c.num(w)? } else { 0 };
+        let info_size = c.num(w)?;
+        let blocks_size = c.num(w)?;
+        // v2 follows the sizes with a checksum.
         let start = self.key_section + (n * w) as u64 + if self.v2 { 4 } else { 0 };
-        let _ = kbi_decomp;
-        Ok((num_blocks, kbi_size, kb_size, start, kbi_decomp))
+        if start.checked_add(info_size).and_then(|e| e.checked_add(blocks_size)).is_none_or(|e| e > self.len) {
+            bail!("key section exceeds the file");
+        }
+        Ok(KeyHeader { blocks, info_decomp, info_size, blocks_size, start })
     }
 
-    fn read_record_table(&mut self, flen: u64) -> Result<()> {
-        let (_, kbi_size, kb_size, start, _) = self.key_header()?;
-        let rec_section = start + kbi_size + kb_size;
+    fn read_record_table(&mut self) -> Result<()> {
+        let kh = self.key_header()?;
+        let rec_section = kh.start + kh.info_size + kh.blocks_size;
         let w = self.width;
         let raw = read_at(&self.file, rec_section, 4 * w)?;
         let mut c = Cursor::new(&raw);
@@ -183,23 +209,24 @@ impl MdictFile {
         let _entries = c.num(w)?;
         let info_size = c.num(w)?;
         let _data_size = c.num(w)?;
-        if info_size > flen || num > info_size {
+        let mut file_off = rec_section + 4 * w as u64;
+        if info_size > self.len - file_off || num > info_size / (2 * w as u64) {
             bail!("corrupt record header");
         }
-        let info = read_at(&self.file, rec_section + 4 * w as u64, info_size as usize)?;
+        let info = read_at(&self.file, file_off, info_size as usize)?;
         let mut c = Cursor::new(&info);
-        let mut file_off = rec_section + 4 * w as u64 + info_size;
+        file_off += info_size;
         let mut decomp_off = 0u64;
         self.blocks.reserve(num as usize);
         for _ in 0..num {
             let comp = c.num(w)?;
             let decomp = c.num(w)?;
+            if comp > self.len - file_off || !plausible_size(comp, decomp) {
+                bail!("corrupt record block table");
+            }
             self.blocks.push(RecordBlock { file_off, comp, decomp_off, decomp });
             file_off += comp;
             decomp_off += decomp;
-        }
-        if file_off > flen {
-            bail!("record blocks exceed file size");
         }
         self.records_total = decomp_off;
         Ok(())
@@ -215,9 +242,9 @@ impl MdictFile {
 
     /// Reads every key with its record offset, in file order.
     pub fn read_keys(&self) -> Result<Vec<(String, u64)>> {
-        let (num_blocks, kbi_size, kb_size, start, kbi_decomp) = self.key_header()?;
+        let kh = self.key_header()?;
         let w = self.width;
-        let mut kbi = read_at(&self.file, start, kbi_size as usize)?;
+        let mut kbi = read_at(&self.file, kh.start, kh.info_size as usize)?;
         if self.v2 {
             if kbi.len() < 8 {
                 bail!("short key-block info");
@@ -229,12 +256,12 @@ impl MdictFile {
                 fast_decrypt(&mut kbi[8..], &key);
             }
             // Framed like any block: zlib as a rule, but stored or LZO where the packer chose so.
-            kbi = decode_block(&kbi, kbi_decomp as usize)?;
+            kbi = decode_block(&kbi, kh.info_decomp)?;
         }
         let utf16 = self.enc == Enc::Utf16;
         let mut c = Cursor::new(&kbi);
-        let mut sizes = Vec::with_capacity(num_blocks as usize);
-        for _ in 0..num_blocks {
+        let mut sizes = Vec::with_capacity(kh.blocks.min(kbi.len() as u64) as usize);
+        for _ in 0..kh.blocks {
             let _n = c.num(w)?;
             for _ in 0..2 {
                 let len = if self.v2 { c.be16()? as usize } else { c.u8()? as usize };
@@ -247,15 +274,15 @@ impl MdictFile {
             sizes.push((comp, decomp));
         }
         let mut keys = Vec::new();
-        let mut off = start + kbi_size;
-        let end = off + kb_size;
+        let mut off = kh.start + kh.info_size;
+        let end = off + kh.blocks_size;
         for (comp, decomp) in sizes {
-            if off + comp > end {
+            if comp > end - off {
                 bail!("key block exceeds key section");
             }
             let raw = read_at(&self.file, off, comp as usize)?;
             off += comp;
-            let block = decode_block(&raw, decomp as usize)?;
+            let block = decode_block(&raw, decomp)?;
             let mut p = 0usize;
             while p + w <= block.len() {
                 let id = if w == 8 {
@@ -305,18 +332,14 @@ impl MdictFile {
         self.cache.get_or_load(i as u64, || {
             let b = &self.blocks[i];
             let raw = read_at(&self.file, b.file_off, b.comp as usize)?;
-            let d = decode_block(&raw, b.decomp as usize)?;
-            if d.len() as u64 != b.decomp {
-                bail!("record block {i}: size mismatch");
-            }
-            Ok(d)
+            decode_block(&raw, b.decomp).with_context(|| format!("record block {i}"))
         })
     }
 
     pub fn record(&self, off: u64, len: u64) -> Result<Vec<u8>> {
         let end = off.checked_add(len).context("overflow")?.min(self.records_total);
         let mut i = self.blocks.partition_point(|b| b.decomp_off + b.decomp <= off);
-        let mut out = Vec::with_capacity(len as usize);
+        let mut out = Vec::with_capacity(end.saturating_sub(off).min(1 << 20) as usize);
         let mut pos = off;
         while pos < end && i < self.blocks.len() {
             let b = &self.blocks[i];
@@ -538,15 +561,8 @@ impl Reader for MdictReader {
 
     fn resource(&self, path: &str) -> Result<Option<Vec<u8>>> {
         // Files next to the .mdx take precedence (stylesheets, scripts shipped separately).
-        if let Some(p) = crate::util::safe_join(&self.dir, path) {
-            if p.is_file() {
-                return Ok(Some(std::fs::read(p)?));
-            }
-            if let Some(parent) = p.parent() {
-                if let Some(f) = p.file_name().and_then(|n| crate::util::find_case_insensitive(parent, &n.to_string_lossy())) {
-                    return Ok(Some(std::fs::read(f)?));
-                }
-            }
+        if let Some(p) = file_below(&self.dir, path) {
+            return Ok(Some(std::fs::read(p)?));
         }
         let key = mdd_key(path);
         for (file, idx) in &self.volumes {
@@ -573,9 +589,64 @@ fn rewrite_links(html: &str) -> String {
     out
 }
 
+/// A v2 .mdx: header, the key section's five numbers, then `rest` as it is.
+#[cfg(test)]
+pub(crate) fn crafted_mdx(key_section: [u64; 5], rest: &[u8]) -> Vec<u8> {
+    let header: Vec<u8> = r#"<Dictionary GeneratedByEngineVersion="2.0" Title="crafted"/>"#
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let mut f = (header.len() as u32).to_be_bytes().to_vec();
+    f.extend_from_slice(&header);
+    f.extend_from_slice(&[0; 4]);
+    for n in key_section {
+        f.extend_from_slice(&n.to_be_bytes());
+    }
+    f.extend_from_slice(&[0; 4]);
+    f.extend_from_slice(rest);
+    f
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_crafted(name: &str, bytes: &[u8]) -> Result<MdictFile> {
+        let p = std::env::temp_dir().join(format!("sg-crafted-{name}-{}.mdx", std::process::id()));
+        std::fs::write(&p, bytes).unwrap();
+        let r = MdictFile::open(&p, false).and_then(|m| m.read_entries().map(|_| m));
+        let _ = std::fs::remove_file(&p);
+        r
+    }
+
+    /// Key-block info as one stored block of 8 bytes, then `records`.
+    fn sections(records: &[u64]) -> Vec<u8> {
+        let mut b = vec![0; 8];
+        b.extend_from_slice(&[0; 8]);
+        for n in records {
+            b.extend_from_slice(&n.to_be_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn malformed_sizes_fail_instead_of_allocating() {
+        let empty_records = [0, 0, 0, 0];
+        // The well-formed baseline: no keys, no records.
+        let ok = crafted_mdx([0, 0, 8, 16, 0], &sections(&empty_records));
+        assert!(open_crafted("ok", &ok).unwrap().read_keys().unwrap().is_empty());
+        // Key-section sizes that wrap around u64 to land back inside the file.
+        let wrap = crafted_mdx([0, 0, 0, 0x4000_0000_0000_0000, 0xC000_0000_0000_0000], &sections(&empty_records));
+        assert!(open_crafted("wrap", &wrap).is_err());
+        // Key-block info past the end of the file.
+        assert!(open_crafted("past", &crafted_mdx([0, 0, 8, 1 << 40, 0], &sections(&empty_records))).is_err());
+        // Key-block info claiming to inflate to a terabyte.
+        assert!(open_crafted("bomb", &crafted_mdx([0, 0, 1 << 40, 16, 0], &sections(&empty_records))).is_err());
+        // A record block of 16 bytes claiming a terabyte.
+        let records = sections(&[1, 1, 16, 16, 16, 1 << 40, 0, 0]);
+        assert!(open_crafted("records", &crafted_mdx([0, 0, 8, 16, 0], &records)).is_err());
+    }
+
     #[test]
     fn attrs() {
         let a = parse_attrs(r#"<Dictionary GeneratedByEngineVersion="2.0" Title="A &amp; B" Encrypted="2"/>"#);

@@ -5,10 +5,18 @@ Super Gloss stays minimal and should just work. Each item below has to fit that.
 ## Next
 
 1. **Look up in place.** Select a word in any app, press the hotkey, and a small floating card answers right there without switching apps. This is the biggest upgrade.
-2. **Navigation polish.** ⌘← / ⌘→ and trackpad swipe for back and forward; Space / ⇧Space to page through results.
+2. **Navigation polish.** ⌘← / ⌘→ and trackpad swipe for back and forward (a mouse's side buttons already work); Space / ⇧Space to page through results from the search line.
 3. **Search inside definitions.** For example, "words meaning *short-lived*" should find ephemeral, transient and fleeting. A full-text index alongside the headword FST.
 4. **Lemmatizers beyond English** (French, German, Spanish, …), so "ran → run"-style matching works in every language.
 5. **UI tests.** Automated tests for the hotkey and focus behavior. (The universal build and the signed, notarized DMG shipped in 1.0.0.)
+
+## Shipped in 1.2.3
+
+- **One column at every size.** The margin list from 1.2.0 is gone: entries sit in one centred column under a pinned dictionary name, and the books button on the search line (or `⌘J`) goes to any of them.
+- **Mac keys.** ↑ / ↓ scroll the page after a lookup; ⌥⌘↑ / ⌥⌘↓ step between dictionaries, and ⌥⌘← / ⌥⌘→ hide or show one.
+- **Mouse parity.** A clear button, right-click Look Up, side buttons for back and forward, the wheel along the related words, and context menus on saved and recent words.
+- **Smarter search.** Common words for one- and two-letter searches, swapped letters as one typo, fast wildcards.
+- **Sturdier core.** Damaged dictionaries and indexes fail alone and rebuild instead of crashing.
 
 ## Shipped in 1.2.0
 

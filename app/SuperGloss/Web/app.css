@@ -2,11 +2,9 @@
   color-scheme: light dark;
   --bg: #ffffff;
   --ink: #1d1d1f;
-  --muted: #8a8a8e;
-  --faint: #c7c7cc;
+  --muted: #6e6e73;
   --rule: rgba(0, 0, 0, 0.07);
   --accent: #c4471b;
-  --gloss-w: 140px;
   --col-w: 700px;
   /* How far article frames reach past the column; article.css pads them back by as much. */
   --bleed: 16px;
@@ -16,42 +14,43 @@
     /* Matches white under the article's dark-mode inversion (invert .882). */
     --bg: #1e1e1e;
     --ink: #ececec;
-    --muted: #8e8e93;
-    --faint: #48484a;
+    --muted: #a1a1a6;
     --rule: rgba(255, 255, 255, 0.08);
     --accent: #ff8a5c;
   }
 }
 
 html, body { margin: 0; padding: 0; background: var(--bg); }
-/* No scrollbar gutter: it would shift the reading column off the search field. */
-html { scrollbar-width: none; }
-::-webkit-scrollbar { display: none; width: 0; height: 0; }
+/* The system's own scroll bar. Where it takes room (a mouse, or Show scroll bars: Always),
+   the room is kept on every page, long or short (MainView's Column counts it). */
+html { scrollbar-gutter: stable; }
+/* The column's lead is max(18px, (width - 700px) / 2) at every width, the width being
+   what the scroll bar leaves (MainView's Column). */
 body {
   color: var(--ink);
   font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
-  padding: 18px 28px 30vh;
+  padding: 18px 18px 30vh;
   -webkit-user-select: none;
   cursor: default;
 }
 
 #via {
-  max-width: calc(var(--gloss-w) + 28px + var(--col-w));
+  max-width: var(--col-w);
   margin: 0 auto 14px;
-  padding-left: calc(var(--gloss-w) + 28px);
   color: var(--muted);
   font-size: 12px;
 }
 #via b { color: var(--ink); font-weight: 600; }
 
-/* The reading column: right of the margin, where the search line starts (MainView.Layout). */
+/* The reading column, centred, where the search line starts (MainView's Column). */
 #col {
   max-width: var(--col-w);
-  margin-left: calc(max(0px, (100% - var(--gloss-w) - 28px - var(--col-w)) / 2) + var(--gloss-w) + 28px);
-  transition: opacity 90ms ease-out;
+  margin: 0 auto;
 }
-#col.loading { opacity: 0; transition: none; }
+/* The next page lays out out of sight while the last one stays on screen (app.js). */
+#col.loading { visibility: hidden; }
+.ghost { position: fixed; margin: 0; pointer-events: none; }
 
 .src {
   padding: 22px 0 26px;
@@ -61,23 +60,41 @@ body {
 /* Room below the last entry, so going to any dictionary brings it to the top. */
 .src:last-child:not(:first-child) { box-sizing: border-box; min-height: calc(70vh - 6px); }
 
-/* Each entry opens with its dictionary's name, quiet as a byline: the margin speaks in
-   small capitals, so the two never echo each other side by side. */
+/* Each entry opens with its dictionary's name, quiet as a byline. The name of the entry
+   being read stays at the top; text passing under it fades. */
 .name {
-  margin: 0 0 10px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: -8px 0 2px;
+  padding: 8px 0;
+  background: var(--bg);
   font: inherit;
+}
+.src.pinned .name::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 100%;
+  height: 14px;
+  background: linear-gradient(var(--bg), transparent);
+  pointer-events: none;
 }
 .tag {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 16px;
-  cursor: pointer;
+  font: 500 12px/16px -apple-system, BlinkMacSystemFont, sans-serif;
+  text-align: start;
+  transition: color 150ms ease-out;
 }
+.tag:focus { outline: none; }
+.tag:focus-visible { outline: 2px solid color-mix(in srgb, var(--ink) 35%, transparent); outline-offset: 3px; border-radius: 3px; }
 .tag img {
   flex: none;
   width: 14px; height: 14px;
@@ -86,26 +103,27 @@ body {
 }
 html.noicons .tag img { display: none; }
 .tag .n, .tag .fn { margin-left: 3px; font-variant-numeric: tabular-nums; }
-.tag .n { color: var(--faint); }
+.tag .n { opacity: 0.75; }
 .tag .fn { color: var(--accent); }
 .tag:has(.fn) .n { display: none; }
 @media (hover: hover) and (pointer: fine) {
   .tag:hover { color: var(--ink); }
 }
 /* Finding: entries without a match recede, so the page shows where the hits are.
-   Their frames dim themselves (frame.js); this dims their names here and in the margin. */
-body.finding .tag, body.finding #index .row { transition: opacity 160ms ease-out; }
+   Their frames dim themselves (frame.js); this dims their names here and in ⌘J's list. */
 body.finding .src.nofind .tag, body.finding #index .row.nofind { opacity: 0.3; }
 
 .body { min-width: 0; position: relative; }
 
 /* Where a followed link landed: the target's first line, tinted for a moment,
-   with an accent edge like a reader's pencil mark. */
+   with an accent edge like a reader's pencil mark. Blended, so the text under the
+   tint keeps its full contrast. */
 .mark {
   position: absolute;
   pointer-events: none;
   border-radius: 4px;
   background: color-mix(in srgb, var(--accent) 16%, transparent);
+  mix-blend-mode: multiply;
 }
 .mark::before {
   content: "";
@@ -115,8 +133,6 @@ body.finding .src.nofind .tag, body.finding #index .row.nofind { opacity: 0.3; }
   border-radius: 4px 0 0 4px;
   background: var(--accent);
 }
-/* Blend so the text under the tint keeps its full contrast. */
-.mark { mix-blend-mode: multiply; }
 @media (prefers-color-scheme: dark) {
   .mark { mix-blend-mode: screen; background: color-mix(in srgb, var(--accent) 22%, transparent); }
 }
@@ -132,85 +148,43 @@ iframe {
 
 .src.collapsed iframe { display: none; }
 .src.collapsed .body::after {
-  content: "Hidden · click the name to show";
+  content: "Hidden · click the name or press ⌥⌘→ to show";
   display: block;
-  color: var(--faint);
+  color: var(--muted);
   font-size: 12px;
 }
 
-/* Too little room for the margin: the column stands centred on its own, the name of the
-   entry being read stays at the top, and ⌘J brings the list up as a contents page. */
-@media (width < 1100px) {
-  #col { margin: 0 auto; }
-  #via { max-width: var(--col-w); padding-left: 0; }
-  .name {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    margin: -8px 0 2px;
-    padding: 8px 0;
-    background: var(--bg);
-  }
-  .src.pinned .name::after {
-    content: "";
-    position: absolute;
-    left: 0; right: 0; top: 100%;
-    height: 14px;
-    background: linear-gradient(var(--bg), transparent);
-    pointer-events: none;
-  }
-}
-
-@media (max-width: 760px) {
-  body { padding-left: 18px; padding-right: 18px; }
-  #col { margin: 0; }
-  #via { margin-left: 0; }
-}
-
-/* ---------- the dictionaries in the margin ----------
-   Two or more on the page and room in the margin: their names, right-aligned against
-   the column, the one being read in ink with an accent tick in the gutter, pointing at
-   it. ⌘J puts the keyboard on the same list; without the room it comes up as a
-   contents page over the article, its icons in line with the column. */
+/* ---------- go to a dictionary (⌘J) ----------
+   A contents page over the article: every dictionary on the page, the names on the
+   column's line, the one the page is showing highlighted. Typing narrows it. */
 #index {
   display: none;
   position: fixed;
+  inset: 0;
   z-index: 2;
-  /* the first name level with the first entry's */
-  top: 21px;
-  left: 24px;
-  /* to the margin's right edge, plus the gutter where the tick sits */
-  width: calc(max(28px, (100vw - var(--gloss-w) - 28px - var(--col-w)) / 2) + var(--gloss-w) - 24px + 14px);
-  max-height: calc(100vh - 31px);
   box-sizing: border-box;
-  padding-right: 14px;
+  /* names on the column's line; the highlight reaches a little into the gutters */
+  --lead: max(18px, (100% - var(--col-w)) / 2); /* of the width the scroll bar leaves */
+  padding: 2px calc(var(--lead) - 10px) 18px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  transition: opacity 90ms ease-out;
+  background: var(--bg);
 }
-body.contents #index, body.indexing #index { display: block; }
-/* A new word's list arrives with its entries. */
-#col.loading ~ #index { opacity: 0; transition: none; }
-#index.below { -webkit-mask-image: linear-gradient(#000 calc(100% - 26px), transparent); }
-#index.above { -webkit-mask-image: linear-gradient(transparent, #000 26px); }
-#index.above.below { -webkit-mask-image: linear-gradient(transparent, #000 26px, #000 calc(100% - 26px), transparent); }
+body.indexing #index { display: block; }
+/* The page under the list holds still, its scroll bar too (the list moves it itself). */
+html:has(body.indexing) { overflow: hidden; }
 
+/* A Mac list: no rules between rows, one rounded highlight for the selection. */
 #index .row {
-  position: relative;
   display: flex;
-  flex-direction: row-reverse;
   align-items: flex-start;
-  gap: 7px;
-  padding: 3px 0;
-  color: var(--muted);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.055em;
-  line-height: 16px;
-  text-transform: uppercase;
-  cursor: pointer;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 18px;
 }
-/* Like the margin's names, long ones wrap; past three lines they end in an ellipsis. */
+/* Long names wrap; past three lines they end in an ellipsis. */
 #index .nm {
   flex: 1;
   min-width: 0;
@@ -218,73 +192,22 @@ body.contents #index, body.indexing #index { display: block; }
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-  text-align: right;
   overflow-wrap: anywhere;
 }
-#index .n { display: none; }
-#index .ic { display: none; flex: none; width: 14px; height: 14px; margin-top: 1px; }
+#index .n {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#index .ic { display: none; flex: none; width: 16px; height: 16px; margin-top: 1px; }
 #index.icons .ic { display: block; }
 html.noicons #index .ic { display: none; }
 #index img { display: block; width: 100%; height: 100%; border-radius: 3px; object-fit: contain; }
-/* What the typing matched reads in full ink; the rest stays quiet. */
-#index b { font-weight: inherit; color: var(--ink); }
-#index .row.hid { color: var(--faint); }
+/* What the typing matched stands out in the accent. */
+#index b { font-weight: inherit; color: var(--accent); }
+#index .row.hid { color: var(--muted); }
 #index .row.out { opacity: 0.28; }
-#index .row.sel { color: var(--ink); opacity: 1; }
-#index .row.sel::after {
-  content: "";
-  position: absolute;
-  right: -14px;
-  top: 3px;
-  bottom: 3px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--accent);
-}
+#index .row.sel { opacity: 1; background: color-mix(in srgb, var(--ink) 9%, transparent); }
 @media (hover: hover) and (pointer: fine) {
-  #index .row:hover { color: var(--ink); }
-}
-@media (width < 1100px) {
-  body.contents:not(.indexing) #index { display: none; }
-  #index {
-    inset: 0;
-    width: auto;
-    max-height: none;
-    /* names on the column's line; the highlight reaches a little into the gutters */
-    --lead: max(28px, (100vw - var(--col-w)) / 2);
-    padding: 2px calc(var(--lead) - 10px) 30vh;
-    background: var(--bg);
-  }
-  #index.below, #index.above, #index.above.below { -webkit-mask-image: none; }
-  /* A Mac list: no rules between rows, one rounded highlight for the selection. */
-  #index .row {
-    flex-direction: row;
-    gap: 10px;
-    padding: 7px 10px;
-    border-radius: 6px;
-    color: var(--ink);
-    font-size: 14px;
-    font-weight: 400;
-    letter-spacing: 0;
-    line-height: 18px;
-    text-transform: none;
-  }
-  #index .nm { text-align: left; }
-  #index .n {
-    display: block;
-    color: var(--faint);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-  }
-  #index .ic { width: 16px; height: 16px; margin-top: 1px; }
-  #index b { color: var(--accent); }
-  #index .row.hid { color: var(--muted); }
-  #index .row.sel { background: color-mix(in srgb, var(--ink) 9%, transparent); }
-  #index .row.sel::after { content: none; }
-  @media (hover: hover) and (pointer: fine) {
-    #index .row:not(.sel):hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
-  }
-}
-@media (max-width: 760px) {
-  #index { --lead: 18px; }
+  #index .row:not(.sel):hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
 }

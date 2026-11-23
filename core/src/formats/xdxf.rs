@@ -4,7 +4,7 @@ use super::markup::{tokenize, xdxf_to_html, Tok};
 use super::{BuildCtx, DictInfo, Reader};
 use crate::index::{Index, IndexBuilder, Locator};
 use crate::store::Source;
-use crate::util::{safe_join, unescape_entities};
+use crate::util::{file_below, unescape_entities};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
@@ -59,8 +59,7 @@ fn keys_of(ar: &str) -> Vec<String> {
 }
 
 pub fn build(path: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
-    let src = Source::open(path, ctx.dir, "text", true)?;
-    let data = src.read_all()?;
+    let data = Source::prepare(path, ctx.dir, "text")?;
     let doc = std::str::from_utf8(&data).map_err(|_| anyhow::anyhow!("XDXF file is not valid UTF-8"))?;
     let probe_end = (0..=doc.len().min(4096)).rev().find(|&i| doc.is_char_boundary(i)).unwrap_or(0);
     if !doc[..probe_end].contains("<xdxf") {
@@ -119,9 +118,9 @@ impl Reader for XdxfReader {
         Ok(xdxf_to_html(inner))
     }
     fn resource(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        match safe_join(&self.dir, path) {
-            Some(p) if p.is_file() => Ok(Some(std::fs::read(p)?)),
-            _ => Ok(None),
+        match file_below(&self.dir, path) {
+            Some(p) => Ok(Some(std::fs::read(p)?)),
+            None => Ok(None),
         }
     }
     fn foreign(&self) -> bool {

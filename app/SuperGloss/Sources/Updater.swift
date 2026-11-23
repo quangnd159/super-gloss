@@ -59,6 +59,8 @@ final class Updater {
     @ObservationIgnored private var pendingPill = false
     /// The check under way was asked for from the menu, so its outcome is told in the pill.
     @ObservationIgnored private var pillForCheck = false
+    /// Someone asked for the check under way (a menu or Settings), so it answers, whatever started it.
+    @ObservationIgnored private var userAsked = false
 
     private struct Staged {
         let app: URL
@@ -124,11 +126,18 @@ final class Updater {
     /// `userInitiated`: asked for, so every step is told, "up to date" included; otherwise only
     /// a ready update is. `inPill`: told in the window's pill (Settings tells it in place).
     func check(userInitiated: Bool = false, inPill: Bool = true) {
-        pillForCheck = userInitiated && inPill
+        if userInitiated {
+            pillForCheck = inPill
+            userAsked = true
+        }
         if staged != nil || checkTask != nil {
-            if pillForCheck { show() }
+            if userInitiated {
+                if checkTask != nil, case .idle = phase { phase = .checking }
+                if pillForCheck { show() }
+            }
             return
         }
+        if !userInitiated { pillForCheck = false }
         guard enabled else {
             if userInitiated { settle(.failed("Only release builds can update themselves")) }
             return
@@ -140,19 +149,22 @@ final class Updater {
         let current = version
         let feed = defaults.string(forKey: Keys.feedOverride).flatMap(URL.init(string:)) ?? Self.feed
         checkTask = Task {
-            defer { checkTask = nil }
+            defer {
+                checkTask = nil
+                userAsked = false
+            }
             do {
                 let release: Release
                 do { release = try await Self.latest(feed) } catch let e as UpdateError { throw e } catch {
                     throw UpdateError("Couldn't reach GitHub", error)
                 }
                 guard Self.isNewer(release.version, than: current) else {
-                    if userInitiated { settle(.current) } else { endQuietly() }
+                    if userAsked { settle(.current) } else { endQuietly() }
                     return
                 }
                 guard let archive = release.archive, let dir = Self.stagingDirectory() else {
                     phase = .available(version: release.version, page: release.page)
-                    if userInitiated || defaults.string(forKey: Keys.dismissed) != release.version { show() }
+                    if userAsked || defaults.string(forKey: Keys.dismissed) != release.version { show() }
                     return
                 }
                 phase = .downloading(version: release.version)
@@ -167,14 +179,14 @@ final class Updater {
                 }
                 staged = Staged(app: app, dir: dir, version: release.version, page: release.page)
                 phase = .ready(version: release.version)
-                if userInitiated || defaults.string(forKey: Keys.dismissed) != release.version {
+                if userAsked || defaults.string(forKey: Keys.dismissed) != release.version {
                     if NSApp.isActive { show() } else { pendingPill = true }
                 }
                 watchForIdle()
             } catch {
                 let e = (error as? UpdateError) ?? UpdateError("Couldn't check for updates", error)
                 Self.log.error("\(e.message, privacy: .public): \(e.cause, privacy: .public)")
-                if userInitiated {
+                if userAsked {
                     settle(.failed(e.message))
                 } else {
                     endQuietly()
@@ -222,6 +234,16 @@ final class Updater {
     private func swapIn() -> Bool {
         guard let s = staged else { return false }
         let target = Bundle.main.bundleURL
+        // Checked again now, not only when it arrived: the staging folder is the user's to
+        // write, and hours may have passed.
+        do {
+            try Self.admit(s.app, newerThan: version)
+        } catch {
+            staged = nil
+            try? FileManager.default.removeItem(at: s.dir)
+            Self.log.error("The staged update no longer passes: \(String(describing: error), privacy: .public)")
+            return false
+        }
         guard renamex_np(s.app.path, target.path, UInt32(RENAME_SWAP)) == 0 else {
             staged = nil
             try? FileManager.default.removeItem(at: s.dir)

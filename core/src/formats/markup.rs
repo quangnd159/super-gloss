@@ -1,6 +1,8 @@
 //! Lenient tag tokenizer plus converters from XDXF and Pango markup to HTML.
 
-use crate::util::{html_escape, html_escape_into, is_audio, is_image, unescape_entities, url_encode_component, url_encode_path};
+use crate::util::{
+    html_escape, html_escape_into, is_audio, is_image, link_allowed, unescape_entities, url_encode_component, url_encode_path,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum Tok<'a> {
@@ -195,6 +197,8 @@ pub fn media_html(out: &mut String, file: &str) {
         out.push_str("<img class=\"sg-img\" loading=\"lazy\" src=\"");
         out.push_str(&html_escape(&url_encode_path(file)));
         out.push_str("\" alt=\"\">");
+    } else if !link_allowed(file) {
+        html_escape_into(out, file);
     } else {
         out.push_str("<a class=\"sg-file\" href=\"");
         out.push_str(&html_escape(&url_encode_path(file)));
@@ -269,24 +273,26 @@ fn render_xdxf(toks: &[Tok], out: &mut String, top: bool) {
             }
             Tok::Open { name, attrs, selfclose, .. } => {
                 let name = name.as_str();
-                let end = if *selfclose { None } else { matching_close(toks, i, name) };
+                // Only the tags that take their content whole look for their close.
+                let at = i;
+                let end = move || if *selfclose { None } else { matching_close(toks, at, name) };
                 match name {
                     "k" => {
                         // Headwords are rendered by the article header.
-                        if let Some(e) = end {
+                        if let Some(e) = end() {
                             i = e + 1;
                             skip_nl = true;
                             continue;
                         }
                     }
                     "nu" => {
-                        if let Some(e) = end {
+                        if let Some(e) = end() {
                             i = e + 1;
                             continue;
                         }
                     }
                     "kref" => {
-                        if let Some(e) = end {
+                        if let Some(e) = end() {
                             let inner = &toks[i + 1..e];
                             let target = attr(attrs, "k").map(str::to_string).unwrap_or_else(|| plain(inner));
                             let mut ih = String::new();
@@ -298,7 +304,7 @@ fn render_xdxf(toks: &[Tok], out: &mut String, top: bool) {
                         }
                     }
                     "rref" => {
-                        let file = match end {
+                        let file = match end() {
                             Some(e) => {
                                 let f = attr(attrs, "lctn").map(str::to_string).unwrap_or_else(|| plain(&toks[i + 1..e]));
                                 i = e + 1;
@@ -314,14 +320,18 @@ fn render_xdxf(toks: &[Tok], out: &mut String, top: bool) {
                     }
                     "iref" => {
                         let href = attr(attrs, "href").unwrap_or("");
-                        if let Some(e) = end {
+                        if let Some(e) = end() {
                             let inner = &toks[i + 1..e];
                             let href = if href.is_empty() { plain(inner) } else { href.to_string() };
-                            out.push_str("<a class=\"x-iref\" href=\"");
-                            html_escape_into(out, &href);
-                            out.push_str("\">");
-                            render_xdxf(inner, out, false);
-                            out.push_str("</a>");
+                            if link_allowed(&href) {
+                                out.push_str("<a class=\"x-iref\" href=\"");
+                                html_escape_into(out, &href);
+                                out.push_str("\">");
+                                render_xdxf(inner, out, false);
+                                out.push_str("</a>");
+                            } else {
+                                render_xdxf(inner, out, false);
+                            }
                             i = e + 1;
                             continue;
                         }
@@ -525,6 +535,13 @@ mod tests {
         assert!(h.contains("--c:darkred"));
         assert!(h.contains("src=\"a.jpg\""));
         assert!(h.starts_with("<b>"));
+    }
+
+    #[test]
+    fn script_links_stay_text() {
+        let h = xdxf_to_html("<iref href=\"javascript:alert(1)\">x</iref> <iref>JavaScript:alert(2)</iref> <iref href=\"https://a.org\">a</iref>");
+        assert!(!h.to_ascii_lowercase().contains("href=\"javascript"), "{h}");
+        assert!(h.contains("<a class=\"x-iref\" href=\"https://a.org\">a</a>"), "{h}");
     }
 
     #[test]

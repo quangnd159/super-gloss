@@ -3,21 +3,28 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
-/// Layout shared with app.css. From 1100 pt the page has a margin (140, where it lists
-/// its dictionaries) + gap (28) + reading column (≤700), centred together; narrower, the
-/// reading column is centred alone, and at 760 pt or less it fills the window.
+/// Layout shared with app.css, in the page's CSS pixels: one reading column (≤700),
+/// centred, never closer than 18 to the window's edges. Text Size zooms the page, making
+/// a CSS pixel `zoom` points wide, so the header works in the same pixels to stay on the
+/// column's line at every size.
 enum Column {
-    static let gloss: CGFloat = 140
-    static let gap: CGFloat = 28
     static let reading: CGFloat = 700
-    static let margin: CGFloat = 28
-    /// The narrowest window with room for the margin.
-    static let withMargin: CGFloat = 1100
+    static let margin: CGFloat = 18
 
-    static func leading(for width: CGFloat) -> CGFloat {
-        if width <= 760 { return 18 }
-        if width < withMargin { return max(margin, (width - reading) / 2) }
-        return max(margin, (width - gloss - gap - reading) / 2) + gloss + gap
+    /// The room a scroll bar keeps at the window's right edge: none when scroll bars float
+    /// over the content (trackpads), the bar's width when they always show (a mouse, or
+    /// Show scroll bars: Always). The page keeps the same room (app.css).
+    static var gutter: CGFloat {
+        NSScroller.preferredScrollerStyle == .legacy
+            ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+    }
+
+    /// The reading column's left edge and width, in points, in a window `width` points wide.
+    static func frame(for width: CGFloat, zoom: CGFloat, gutter: CGFloat) -> (lead: CGFloat, width: CGFloat) {
+        let w = (width - gutter) / zoom
+        let lead = max(margin, (w - reading) / 2)
+        let column = min(reading, w - 2 * lead)
+        return (lead * zoom, max(0, column) * zoom)
     }
 }
 
@@ -43,18 +50,19 @@ struct MainView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var dropTargeted = false
     @State private var headerHover = false
+    @State private var gutter = Column.gutter
 
     var body: some View {
         GeometryReader { geo in
-            let lead = Column.leading(for: geo.size.width)
+            let column = Column.frame(for: geo.size.width, zoom: model.zoom, gutter: gutter)
+            let lead = column.lead
             VStack(spacing: 0) {
-                header(lead: lead)
+                header(lead: lead, width: column.width)
                 ZStack(alignment: .topLeading) {
                     ArticleView(model: model)
                         .opacity(model.query.isEmpty || model.noResults ? 0 : 1)
                     if model.query.isEmpty {
                         Home(model: model, lead: lead)
-                            .transition(.opacity)
                     } else if model.noResults {
                         NoResults(query: model.query)
                             .padding(.leading, lead)
@@ -63,7 +71,7 @@ struct MainView: View {
                 }
             }
             .overlay(alignment: .top) { IndexingLine(progress: model.indexingProgress) }
-            .overlay(alignment: .topTrailing) { navButtons.padding(.top, 9).padding(.trailing, 14) }
+            .overlay(alignment: .topTrailing) { navButtons.padding(.trailing, 13) }
             .overlay { if dropTargeted { DropTarget() } }
             .overlay(alignment: .bottomTrailing) { UpdatePill(updater: .shared) }
         }
@@ -74,6 +82,9 @@ struct MainView: View {
         .onAppear {
             model.openMainWindow = { openWindow(id: "main") }
             DispatchQueue.main.async { fieldFocused = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+            gutter = Column.gutter // a mouse plugged in or out
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             // Whenever the window comes forward, the search line is ready for typing —
@@ -111,53 +122,48 @@ struct MainView: View {
                 NSApp.sendAction(sel, to: nil, from: nil)
             }
         }
-        .animation(.easeOut(duration: 0.12), value: model.query.isEmpty)
     }
 
-    private func header(lead: CGFloat) -> some View {
-        // With room for the margin, the saved mark sits there, right-aligned with
-        // the dictionary names below; in a narrow window it follows the field.
-        let inMargin = lead >= Column.gap + SavedMark.width + 8
-        return VStack(alignment: .leading, spacing: 9) {
+    private func header(lead: CGFloat, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            // The search line ends at the column's right edge, at every size, with its
+            // controls: clear it, save the word, go to one of the dictionaries that answered.
             HStack(spacing: 8) {
                 SearchField(model: model, focused: $fieldFocused)
-                if !inMargin { SavedMark(model: model, reveal: headerHover) }
-            }
-            .overlay(alignment: .leading) {
-                if inMargin {
+                // Wide targets that meet, with no dead gap between them.
+                HStack(spacing: 0) {
+                    ClearButton(model: model, reveal: headerHover)
                     SavedMark(model: model, reveal: headerHover)
-                        .offset(x: -(Column.gap + SavedMark.width))
                 }
+                SourcesButton(model: model)
             }
             // The find and index lines take the related words' place, at the same height.
             ZStack(alignment: .leading) {
                 if model.finding {
                     FindLine(model: model, focused: $findFocused)
-                        .transition(.opacity.combined(with: .offset(y: 3)))
                 } else if model.indexing {
                     IndexLine(model: model, focused: $indexFocused)
                 } else {
                     WordStrip(model: model)
-                        .transition(.opacity)
                 }
             }
             .frame(height: 24)
             .opacity(model.query.isEmpty ? 0 : 1)
-            .animation(.easeOut(duration: 0.14), value: model.finding)
-            .animation(nil, value: model.indexing)
         }
+        // As wide as the column below: the related words end where its text does.
+        .frame(width: width, alignment: .leading)
         .padding(.leading, lead)
-        .padding(.trailing, Column.margin)
         .padding(.top, 40)
         .padding(.bottom, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onHover { headerHover = $0 }
     }
 
     private var navButtons: some View {
-        HStack(spacing: 2) {
-            NavButton(symbol: "chevron.left", help: "Back (⌘[)", enabled: !model.backStack.isEmpty) { model.goBack() }
-            NavButton(symbol: "chevron.right", help: "Forward (⌘])", enabled: !model.forwardStack.isEmpty) { model.goForward() }
+        HStack(spacing: 0) {
+            NavButton(symbol: "chevron.left", label: "Back", help: "Back (⌘[)", enabled: !model.backStack.isEmpty) { model.goBack() }
+            NavButton(symbol: "chevron.right", label: "Forward", help: "Forward (⌘])", enabled: !model.forwardStack.isEmpty) { model.goForward() }
         }
         .opacity(model.backStack.isEmpty && model.forwardStack.isEmpty ? 0 : 1)
     }
@@ -186,34 +192,39 @@ struct SearchField: View {
     var body: some View {
         ZStack(alignment: .leading) {
             if let rest = model.completion {
-                (Text(model.query).foregroundStyle(.clear) + Text(rest).foregroundStyle(.tertiary))
-                    .font(Self.font)
-                    .lineLimit(1)
-                    .padding(.leading, 2)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                // Only while it fits: past the field's width the text scrolls, the ghost wouldn't.
+                ViewThatFits(in: .horizontal) {
+                    (Text(model.query).foregroundStyle(.clear) + Text(rest).foregroundStyle(.tertiary))
+                        .font(Self.font)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.leading, 2)
+                    Color.clear.frame(width: 0)
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
             }
-            TextField("", text: $model.query, prompt: Text("Look up").foregroundStyle(.quaternary))
+            TextField("", text: $model.query, prompt: Text("Look up").foregroundStyle(.tertiary))
                 .textFieldStyle(.plain)
                 .font(Self.font)
                 .focused(focused)
                 .autocorrectionDisabled()
                 .onSubmit { model.submit() }
-                // ↑↓ go between dictionaries, the most frequent move; ⌥↑↓ along the related words.
-                .onKeyPress(keys: [.downArrow, .upArrow], phases: [.down, .repeat]) { press in
+                // On the home page ↑↓ walk its words; ⌥↑↓ go along the related words. Otherwise
+                // the keys that scroll a document scroll the entries (below).
+                .onKeyPress(keys: [.downArrow, .upArrow], phases: [.down, .repeat, .up]) { press in
                     let d = press.key == .downArrow ? 1 : -1
                     if model.query.isEmpty {
-                        model.moveHome(d)
+                        if press.phase != .up { model.moveHome(d) }
                     } else if press.modifiers.contains(.option) {
-                        model.moveSelection(d)
-                    } else {
-                        model.article?.jump(d)
+                        if press.phase != .up { model.moveSelection(d) }
+                    } else if press.modifiers.contains(.shift) || !model.scrollPage() {
+                        return .ignored
                     }
                     return .handled
                 }
                 .onKeyPress(.tab) {
-                    _ = model.acceptCompletion()
-                    return .handled
+                    model.acceptCompletion() ? .handled : .ignored
                 }
                 .onKeyPress(.escape) {
                     if model.query.isEmpty {
@@ -223,9 +234,8 @@ struct SearchField: View {
                     }
                     return .handled
                 }
-                .onKeyPress(keys: [.pageDown, .pageUp], phases: [.down, .repeat]) { press in
-                    model.article?.page(press.key == .pageDown ? 1 : -1)
-                    return .handled
+                .onKeyPress(keys: [.pageDown, .pageUp, .home, .end], phases: [.down, .repeat, .up]) { _ in
+                    model.scrollPage() ? .handled : .ignored
                 }
                 .accessibilityLabel("Look up")
         }
@@ -237,6 +247,13 @@ struct SearchField: View {
 
 struct WordStrip: View {
     let model: AppModel
+    /// How far the row runs past each edge, so each fades only where there is more.
+    @State private var beyond = Beyond()
+
+    struct Beyond: Equatable {
+        var leading: CGFloat = 0
+        var trailing: CGFloat = 0
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -255,13 +272,27 @@ struct WordStrip: View {
                 .padding(.vertical, 3)
                 .padding(.trailing, 40)
             }
-            .mask(
-                LinearGradient(stops: [.init(color: .black, location: 0.86), .init(color: .clear, location: 1)],
-                               startPoint: .leading, endPoint: .trailing)
-            )
+            .onScrollGeometryChange(for: Beyond.self) { g in
+                Beyond(leading: min(32, max(0, g.contentOffset.x)).rounded(),
+                       trailing: min(96, max(0, g.contentSize.width - g.contentOffset.x - g.containerSize.width)).rounded())
+            } action: { _, new in
+                beyond = new
+            }
+            // Each fade grows with what lies past its edge: none at rest on the left, none
+            // once the last word is in view on the right.
+            .mask {
+                HStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: beyond.leading)
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: beyond.trailing)
+                }
+            }
+            .background(SidewaysWheel())
             .onChange(of: model.selected) {
                 guard model.selected >= 0 else { return }
-                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(model.selected, anchor: .center) }
+                proxy.scrollTo(model.selected, anchor: .center)
             }
             .onChange(of: model.suggestions) {
                 proxy.scrollTo(0, anchor: .leading)
@@ -281,7 +312,6 @@ struct StripWord: View {
     var body: some View {
         Button(action: action) {
             Text(suggestion.word)
-                .fontWeight(selected ? .medium : .regular)
                 .italic(suggestion.kind == "fuzzy")
                 .foregroundStyle(color)
                 .lineLimit(1)
@@ -292,11 +322,11 @@ struct StripWord: View {
                         Circle().fill(Color.ink).frame(width: 4, height: 4).offset(x: 6, y: 1)
                     }
                 }
+                .largerTarget(horizontal: 8, vertical: 4)
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .help(help)
-        .animation(.easeOut(duration: 0.1), value: selected)
     }
 
     private var color: Color {
@@ -306,7 +336,7 @@ struct StripWord: View {
     }
 
     private var help: String {
-        let sources = "\(suggestion.sources) source\(suggestion.sources == 1 ? "" : "s")"
+        let sources = "\(suggestion.sources) dictionar\(suggestion.sources == 1 ? "y" : "ies")"
         let base = suggestion.kind == "lemma" ? "Base form · in \(sources)" : "In \(sources)"
         return saved ? base + " · saved" : base
     }
@@ -339,10 +369,10 @@ struct FindLine: View {
             status
                 .padding(.leading, 6)
             Spacer(minLength: 8)
-            HStack(spacing: 2) {
-                NavButton(symbol: "chevron.up", help: "Previous match (⇧⌘G)", enabled: model.findTotal > 0) { model.findStep(-1) }
-                NavButton(symbol: "chevron.down", help: "Next match (⌘G)", enabled: model.findTotal > 0) { model.findStep(1) }
-                NavButton(symbol: "xmark", help: "Done (Esc)", enabled: true) { model.endFind() }
+            HStack(spacing: 0) {
+                NavButton(symbol: "chevron.up", label: "Previous match", help: "Previous match (⇧⌘G)", enabled: model.findTotal > 0) { model.findStep(-1) }
+                NavButton(symbol: "chevron.down", label: "Next match", help: "Next match (⌘G)", enabled: model.findTotal > 0) { model.findStep(1) }
+                NavButton(symbol: "xmark", label: "Done", help: "Done (Esc)", enabled: true) { model.endFind() }
             }
         }
         .font(.system(size: 13.5))
@@ -355,7 +385,7 @@ struct FindLine: View {
         } else if model.findTotal == 0 {
             Text("No matches").foregroundStyle(.secondary)
         } else if model.findIndex > 0 {
-            Text("\(model.findIndex) of \(model.findTotal)").foregroundStyle(.tertiary).monospacedDigit()
+            Text("\(model.findIndex) of \(model.findTotal)").foregroundStyle(.secondary).monospacedDigit()
         } else {
             Text("\(model.findTotal) \(model.findTotal == 1 ? "match" : "matches")").foregroundStyle(.tertiary).monospacedDigit()
         }
@@ -397,8 +427,8 @@ struct FittedField: View {
 
 // MARK: - Index line
 
-/// Going to a dictionary (⌘J). The page lists every dictionary in the margin; this
-/// line takes the typing that narrows it and names the one selected, in full.
+/// Going to a dictionary (⌘J). The page lists every dictionary as a contents page; this
+/// line takes the typing that narrows it.
 struct IndexLine: View {
     @Bindable var model: AppModel
     var focused: FocusState<Bool>.Binding
@@ -439,41 +469,163 @@ struct IndexLine: View {
     }
 }
 
+/// A wheel mouse scrolls only up and down. Over a row that scrolls sideways, its turns move
+/// the row instead, as they do with Shift held. Trackpads already scroll both ways.
+struct SidewaysWheel: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { WheelView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class WheelView: NSView {
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard !event.hasPreciseScrollingDeltas, event.scrollingDeltaX == 0, event.scrollingDeltaY != 0
+                else { return event }
+                let point = event.locationInWindow
+                let number = event.windowNumber
+                let over = MainActor.assumeIsolated { self?.covers(point, inWindow: number) ?? false }
+                return over ? Self.sideways(event) : event
+            }
+        }
+
+        private func covers(_ point: NSPoint, inWindow number: Int) -> Bool {
+            window?.windowNumber == number && bounds.contains(convert(point, from: nil))
+        }
+
+        private nonisolated static func sideways(_ event: NSEvent) -> NSEvent {
+            guard let cg = event.cgEvent?.copy() else { return event }
+            for (down, across) in [(CGEventField.scrollWheelEventDeltaAxis1, CGEventField.scrollWheelEventDeltaAxis2),
+                                   (.scrollWheelEventPointDeltaAxis1, .scrollWheelEventPointDeltaAxis2)] {
+                cg.setIntegerValueField(across, value: cg.getIntegerValueField(down))
+                cg.setIntegerValueField(down, value: 0)
+            }
+            cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: cg.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1))
+            cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: 0)
+            return NSEvent(cgEvent: cg) ?? event
+        }
+    }
+}
+
+// MARK: - Clear button
+
+/// Esc for the mouse: empties the search line, back to the home page. Shown, like the
+/// saved mark beside it, while the pointer is over the header.
+struct ClearButton: View {
+    let model: AppModel
+    let reveal: Bool
+    @State private var hover = false
+
+    var body: some View {
+        let present = !model.query.isEmpty
+        Button { model.clear() } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(hover ? .secondary : .tertiary)
+                .frame(width: 32, height: 40, alignment: .trailing)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(Pressable())
+        .opacity(present && (reveal || hover) ? 1 : 0)
+        .allowsHitTesting(present)
+        .accessibilityHidden(!present)
+        .onHover { hover = $0 }
+        .help("Clear (Esc)")
+        .animation(.easeOut(duration: 0.15), value: reveal)
+        .accessibilityLabel("Clear")
+    }
+}
+
 // MARK: - Saved mark
 
-/// Saves the word on screen. A bookmark in the margin beside the word: filled in
+/// Saves the word on screen. A bookmark at the end of the search line: filled in
 /// the accent when saved, otherwise shown only while the pointer is over the header.
 struct SavedMark: View {
     let model: AppModel
     let reveal: Bool
-    static let width: CGFloat = 22
     @State private var hover = false
+    /// Clicks that saved: the mark gives a small bounce for the pointer. ⌘D changes it at once.
+    @State private var clicks = 0
 
     var body: some View {
         let saved = model.shownIsSaved
         let present = model.shownWord != nil
-        Button { model.toggleSaved() } label: {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { model.toggleSaved() }
+            if model.shownIsSaved { clicks += 1 }
+        } label: {
             Image(systemName: saved ? "bookmark.fill" : "bookmark")
                 .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(saved ? AnyShapeStyle(Color.ink) : AnyShapeStyle(hover ? .secondary : .tertiary))
                 .contentTransition(.symbolEffect(.replace.downUp))
-                .symbolEffect(.bounce.down, value: model.saveTick)
-                .frame(width: Self.width, height: 40, alignment: .trailing)
+                .symbolEffect(.bounce.down, value: clicks)
+                .frame(width: 32, height: 40, alignment: .trailing)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(Pressable())
         .opacity(present && (saved || reveal || hover) ? 1 : 0)
         .allowsHitTesting(present)
+        .accessibilityHidden(!present)
         .onHover { hover = $0 }
         .help(saved ? "Saved — click to remove (⌘D)" : "Save this word (⌘D)")
         .animation(.easeOut(duration: 0.15), value: reveal)
-        .animation(.easeOut(duration: 0.15), value: saved)
         .accessibilityLabel(saved ? "Remove from saved" : "Save this word")
+    }
+}
+
+/// ⌘J for the mouse. Says how many dictionaries answered the word, and opens the list
+/// of them; in the accent, like the list's own line, while it is open. Always in view
+/// when there is somewhere to go, so it is found without knowing the key.
+struct SourcesButton: View {
+    let model: AppModel
+    @State private var hover = false
+
+    var body: some View {
+        let count = model.query.isEmpty || model.noResults ? 0 : model.shown?.hits.count ?? 0
+        let open = model.indexing
+        Button { model.startIndex() } label: {
+            // One run of text: the symbol takes the figures' font and weight and centres
+            // itself on their cap height, as SF Symbols do inline; the small scale keeps it
+            // close to their height, so it neither towers over nor sinks below them.
+            Text("\(Image(systemName: "books.vertical")) \(count.formatted())")
+                .font(.system(size: 12.5, weight: .medium))
+                .monospacedDigit()
+                .imageScale(.small)
+                .foregroundStyle(open ? AnyShapeStyle(Color.ink) : AnyShapeStyle(hover ? .secondary : .tertiary))
+                .padding(.horizontal, 8)
+                .frame(height: 26)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(.primary.opacity(open ? 0.07 : hover ? 0.05 : 0)))
+                // The whole height of the search line takes the click, not just the chip.
+                .frame(height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(Pressable())
+        // The figures sit on the column's edge; the chip reaches into the gutter.
+        .padding(.trailing, -8)
+        // Kept in place when hidden, so the line doesn't shift as results change while typing.
+        // Nothing here animates but the pointer's hover: the count follows typing and ⌘J.
+        .opacity(count > 1 ? 1 : 0)
+        .allowsHitTesting(count > 1)
+        .accessibilityHidden(count < 2)
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.15)) { hover = inside }
+        }
+        .help(open ? "Back to the entries (⌘J)" : "Go to a dictionary (⌘J)")
+        .accessibilityLabel(open ? "Close the list of dictionaries" : "Go to a dictionary")
+        .accessibilityValue("\(count) dictionaries")
     }
 }
 
 struct NavButton: View {
     let symbol: String
+    let label: String
     let help: String
     let enabled: Bool
     let action: () -> Void
@@ -484,14 +636,19 @@ struct NavButton: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
                 .frame(width: 26, height: 22)
-                .background(RoundedRectangle(cornerRadius: 6).fill(.primary.opacity(hover && enabled ? 0.07 : 0)))
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(.primary.opacity(hover && enabled ? 0.07 : 0)))
+                // Larger to the pointer than to the eye; neighbours' targets meet.
+                .padding(.horizontal, 1)
+                .padding(.vertical, 9)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(Pressable())
         .foregroundStyle(enabled ? .secondary : .quaternary)
         .disabled(!enabled)
         .onHover { hover = $0 }
         .help(help)
+        .accessibilityLabel(label)
     }
 }
 
@@ -544,15 +701,18 @@ struct Home: View {
 
     private var lists: some View {
         VStack(alignment: .leading, spacing: 22) {
-            if !model.saved.isEmpty {
+            if !model.savedOnHome.isEmpty {
                 SavedWords(model: model)
             }
             if !model.history.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
-                    Label2("Recent")
+                    SectionLabel("Recent")
                     ForEach(model.history.prefix(AppModel.recentShown), id: \.self) { w in
                         HomeLink(text: model.label(w), selected: model.homeSelection == .recent(w)) { model.commit(w) }
                             .scrollTarget(HomeItem.recent(w))
+                            .contextMenu {
+                                Button(model.isSaved(w) ? "Remove from Saved" : "Save Word") { model.toggleSaved(w) }
+                            }
                     }
                 }
             }
@@ -596,25 +756,27 @@ struct SavedWords: View {
     let model: AppModel
 
     var body: some View {
-        let all = model.saved
+        let all = model.savedOnHome
+        let live = Set(model.saved.map { $0.lowercased() })
         let folded = !model.savedExpanded && all.count > AppModel.savedShown
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
-                Label2("Saved")
-                Text(all.count.formatted())
+                SectionLabel("Saved")
+                Text(live.count.formatted())
                     .font(.system(size: 10.5, weight: .medium))
                     .monospacedDigit()
-                    .foregroundStyle(.quaternary)
+                    .foregroundStyle(.tertiary)
             }
             .contextMenu {
                 Button("Copy All Saved Words") { model.copySaved() }
             }
             Flow(spacing: 18, lineSpacing: 4) {
                 ForEach(folded ? Array(all.prefix(AppModel.savedShown)) : all, id: \.self) { w in
-                    HomeLink(text: model.label(w), selected: model.homeSelection == .saved(w)) { model.commit(w) }
+                    let removed = !live.contains(w.lowercased())
+                    HomeLink(text: model.label(w), selected: model.homeSelection == .saved(w), removed: removed) { model.commit(w) }
                         .scrollTarget(HomeItem.saved(w))
                         .contextMenu {
-                            Button("Remove from Saved") { model.unsave(w) }
+                            Button(removed ? "Put Back in Saved" : "Remove from Saved") { model.toggleSaved(w) }
                         }
                 }
                 if folded {
@@ -670,11 +832,12 @@ struct Flow: Layout {
     }
 }
 
-struct Label2: View {
+struct SectionLabel: View {
     let text: String
     init(_ t: String) { text = t }
     var body: some View {
-        Text(text.uppercased())
+        Text(text)
+            .textCase(.uppercase)
             .font(.system(size: 10.5, weight: .semibold))
             .tracking(0.6)
             .foregroundStyle(.tertiary)
@@ -685,6 +848,7 @@ struct Label2: View {
 struct SurpriseButton: View {
     let action: () -> Void
     @State private var face = Int.random(in: 1...6)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
@@ -696,7 +860,9 @@ struct SurpriseButton: View {
         }
         .onHover { inside in
             guard inside else { return }
-            face = (face + Int.random(in: 0...4)) % 6 + 1
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) {
+                face = (face + Int.random(in: 0...4)) % 6 + 1
+            }
         }
         .help("A word worth meeting from your library (⌘R)")
     }
@@ -705,23 +871,36 @@ struct SurpriseButton: View {
 struct HomeLink: View {
     let text: String
     var selected = false
+    /// Removed from Saved on this visit: struck through, still in its place.
+    var removed = false
     let action: () -> Void
     @State private var hover = false
     var body: some View {
         Button(action: action) {
             Text(text)
                 .font(.system(size: 19, design: .serif))
-                .foregroundStyle(hover || selected ? .primary : .secondary)
+                .strikethrough(removed)
+                .foregroundStyle(removed ? (hover || selected ? .secondary : .tertiary) : (hover || selected ? .primary : .secondary))
                 .lineLimit(1)
                 .selectionMark(selected, below: 2)
+                .largerTarget(horizontal: 9, vertical: 2)
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .animation(.easeOut(duration: 0.1), value: selected)
+        .help(removed ? "Removed from Saved — right-click to put it back" : "")
     }
 }
 
 extension View {
+    /// Grows what takes the pointer past what is drawn, leaving the layout as it was.
+    func largerTarget(horizontal: CGFloat, vertical: CGFloat) -> some View {
+        padding(.horizontal, horizontal)
+            .padding(.vertical, vertical)
+            .contentShape(Rectangle())
+            .padding(.horizontal, -horizontal)
+            .padding(.vertical, -vertical)
+    }
+
     /// The ink underline under the word the keyboard is on, as in the related words.
     func selectionMark(_ on: Bool, below: CGFloat) -> some View {
         overlay(alignment: .bottom) {
@@ -744,11 +923,16 @@ struct LibraryStatus: View {
             if let b = busy.first {
                 Text("Preparing \(b.shortName)\(busy.count > 1 ? " and \(busy.count - 1) more" : "")…")
             }
-            Text("\(ready.count) source\(ready.count == 1 ? "" : "s") · \(words.formatted()) headwords")
-            let failed = model.dictionaries.filter { $0.state == "failed" }
-            if !failed.isEmpty {
-                Text("\(failed.count) could not be opened — see Settings")
-                    .foregroundStyle(Color.ink)
+            Text("\(ready.count) dictionar\(ready.count == 1 ? "y" : "ies") · \(words.formatted()) headwords")
+            let failed = model.dictionaries.filter { $0.state == "failed" }.count
+            if failed > 0 {
+                SettingsLink {
+                    Text("\(failed) dictionar\(failed == 1 ? "y" : "ies") couldn’t be opened")
+                        .underline()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.ink)
+                .help("See why in Settings")
             }
         }
         .font(.system(size: 11.5))
@@ -767,7 +951,7 @@ struct Onboarding: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 440, alignment: .leading)
-            Button("Choose Folder…") { chooseDictionaries() }
+            Button("Add Dictionaries…") { chooseDictionaries() }
                 .controlSize(.large)
                 .padding(.top, 4)
         }
@@ -781,7 +965,7 @@ func chooseDictionaries() {
     p.canChooseFiles = true
     p.allowsMultipleSelection = true
     p.prompt = "Add"
-    p.message = "Choose dictionary files or folders that contain them."
+    p.message = "Choose dictionaries, or folders of them: MDict, StarDict, DSL, Babylon, dictd or XDXF."
     if p.runModal() == .OK {
         AppModel.shared.addRoots(p.urls)
     }

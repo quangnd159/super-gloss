@@ -11,6 +11,7 @@
 
 use crate::fold::{self, KEY_SEP};
 use anyhow::{bail, Context, Result};
+use fst::automaton::Levenshtein;
 use fst::{Automaton, IntoStreamer, Streamer};
 use memmap2::Mmap;
 use std::fs::File;
@@ -176,6 +177,8 @@ pub struct Index {
 impl Index {
     pub fn open(dir: &Path, name: &str) -> Result<Index> {
         let fst = fst::Map::new(map_file(&dir.join(format!("{name}.fst")))?)?;
+        // A damaged map can send searches anywhere; caught here, the index is rebuilt.
+        fst.as_fst().verify().context("corrupt index")?;
         let entries = map_file(&dir.join(format!("{name}.entries")))?;
         let words = map_file(&dir.join(format!("{name}.words")))?;
         if entries.as_ref().len() % REC != 0 {
@@ -253,12 +256,9 @@ impl Index {
         out
     }
 
-    /// Groups whose folded part is within `dist` edits of `folded`.
-    pub fn fuzzy(&self, folded: &str, dist: u32, limit: usize) -> Vec<Group> {
-        let Ok(lev) = fst::automaton::Levenshtein::new(folded, dist) else {
-            return Vec::new();
-        };
-        self.search_folded(UntilSep(&lev), limit)
+    /// Every key with its value, in order.
+    pub fn keys(&self) -> &fst::Map<Bytes> {
+        &self.fst
     }
 
     pub fn search_folded<A: Automaton>(&self, aut: UntilSep<A>, limit: usize) -> Vec<Group> {
@@ -271,19 +271,6 @@ impl Index {
             }
         }
         out
-    }
-
-    /// Streams every key starting with `prefix`, calling `f` until it returns false.
-    pub fn scan_prefix(&self, prefix: &[u8], mut f: impl FnMut(&[u8], Group) -> bool) {
-        let mut s = self.fst.range().ge(prefix).into_stream();
-        while let Some((k, v)) = s.next() {
-            if !k.starts_with(prefix) {
-                break;
-            }
-            if !f(k, Group::from(k, v)) {
-                break;
-            }
-        }
     }
 }
 
@@ -336,30 +323,120 @@ impl<A: Automaton> Automaton for UntilSep<A> {
     }
 }
 
-/// Case/diacritic-folded glob match supporting `*` and `?`.
-pub fn glob_match(pattern: &[char], text: &[char]) -> bool {
-    let (mut p, mut t) = (0usize, 0usize);
-    let (mut star, mut mark) = (usize::MAX, 0usize);
-    while t < text.len() {
-        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == text[t]) {
-            p += 1;
-            t += 1;
-        } else if p < pattern.len() && pattern[p] == '*' {
-            star = p;
-            p += 1;
-            mark = t;
-        } else if star != usize::MAX {
-            p = star + 1;
-            mark += 1;
-            t = mark;
-        } else {
-            return false;
+/// Up to [`AnyLev::MAX`] Levenshtein automata walked together, so the map is read once for
+/// all of them rather than once each.
+pub struct AnyLev<'a>(pub &'a [Levenshtein]);
+
+impl AnyLev<'_> {
+    pub const MAX: usize = 16;
+    const DEAD: u32 = u32::MAX;
+}
+
+impl Automaton for AnyLev<'_> {
+    type State = [u32; AnyLev::MAX];
+
+    fn start(&self) -> Self::State {
+        let mut s = [Self::DEAD; Self::MAX];
+        s[..self.0.len()].fill(0);
+        s
+    }
+    fn is_match(&self, s: &Self::State) -> bool {
+        self.0.iter().zip(s).any(|(a, &st)| st != Self::DEAD && a.is_match(&Some(st as usize)))
+    }
+    fn can_match(&self, s: &Self::State) -> bool {
+        s.iter().any(|&st| st != Self::DEAD)
+    }
+    fn accept(&self, s: &Self::State, byte: u8) -> Self::State {
+        let mut next = [Self::DEAD; Self::MAX];
+        for ((a, &st), n) in self.0.iter().zip(s).zip(&mut next) {
+            if st != Self::DEAD {
+                *n = a.accept(&Some(st as usize), byte).map_or(Self::DEAD, |t| t as u32);
+            }
         }
+        next
     }
-    while p < pattern.len() && pattern[p] == '*' {
-        p += 1;
+}
+
+/// A glob (`*` any run, `?` one character) as an automaton over UTF-8 bytes, so a search
+/// skips every branch of the map that can't match instead of visiting each key.
+///
+/// The pattern is a row of slots and the state the set of slots reached (bit `len` means
+/// a match). `?` takes four: the lead byte, then one slot per continuation byte to come.
+pub struct Glob {
+    slots: Vec<Slot>,
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Byte(u8),
+    Star,
+    Any,
+    /// Inside a `?`: this many continuation bytes still to come.
+    Cont(u8),
+}
+
+impl Glob {
+    /// None for a pattern too long for the state's 128 bits.
+    pub fn new(pattern: &str) -> Option<Glob> {
+        let mut slots = Vec::new();
+        for c in pattern.chars() {
+            match c {
+                '*' if matches!(slots.last(), Some(Slot::Star)) => {}
+                '*' => slots.push(Slot::Star),
+                '?' => slots.extend([Slot::Any, Slot::Cont(1), Slot::Cont(2), Slot::Cont(3)]),
+                _ => slots.extend(c.encode_utf8(&mut [0; 4]).bytes().map(Slot::Byte)),
+            }
+        }
+        (slots.len() < 128).then_some(Glob { slots })
     }
-    p == pattern.len()
+
+    /// Adds the slots a `*` reaches by matching nothing.
+    fn close(&self, mut s: u128) -> u128 {
+        for (i, slot) in self.slots.iter().enumerate() {
+            if matches!(slot, Slot::Star) && s & (1 << i) != 0 {
+                s |= 1 << (i + 1);
+            }
+        }
+        s
+    }
+}
+
+impl Automaton for Glob {
+    type State = u128;
+
+    fn start(&self) -> u128 {
+        self.close(1)
+    }
+    fn is_match(&self, s: &u128) -> bool {
+        s & (1 << self.slots.len()) != 0
+    }
+    fn can_match(&self, s: &u128) -> bool {
+        *s != 0
+    }
+    fn accept(&self, s: &u128, b: u8) -> u128 {
+        let mut live = s & !(1 << self.slots.len());
+        let mut next = 0u128;
+        while live != 0 {
+            let i = live.trailing_zeros() as usize;
+            live &= live - 1;
+            let to = match self.slots[i] {
+                Slot::Byte(x) if x == b => i + 1,
+                Slot::Star => i,
+                Slot::Any => match b {
+                    0..=0x7f => i + 4,
+                    0xc0..=0xdf => i + 1,
+                    0xe0..=0xef => i + 2,
+                    0xf0..=0xf7 => i + 3,
+                    _ => continue,
+                },
+                // Cont(n) sits n slots after its `?`, whose end is 4 slots after it.
+                Slot::Cont(n) if b & 0xc0 == 0x80 => if n > 1 { i - 1 } else { i + 3 },
+                _ => continue,
+            };
+            next |= 1 << to;
+        }
+        self.close(next)
+    }
 }
 
 #[cfg(test)]
@@ -390,12 +467,52 @@ mod tests {
         assert_eq!(idx.folded(b"an").len(), 3);
         let p = idx.prefix(b"an", 100);
         assert_eq!(p.len(), 5);
-        let fz = idx.fuzzy("aple", 1, 10);
-        assert_eq!(fz.len(), 1);
-        let fz = idx.fuzzy("an", 0, 10);
-        assert_eq!(fz.len(), 3);
-        assert!(glob_match(&"a*e".chars().collect::<Vec<_>>(), &"apple".chars().collect::<Vec<_>>()));
-        assert!(!glob_match(&"a?e".chars().collect::<Vec<_>>(), &"apple".chars().collect::<Vec<_>>()));
+        let lev = |q, d| fst::automaton::Levenshtein::new(q, d).unwrap();
+        assert_eq!(idx.search_folded(UntilSep(&lev("aple", 1)), 10).len(), 1);
+        assert_eq!(idx.search_folded(UntilSep(&lev("an", 0)), 10).len(), 3);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn damaged_map_is_refused() {
+        let d = tmpdir("damaged");
+        let mut b = IndexBuilder::new();
+        for (i, w) in ["apple", "banana", "cherry", "date", "elderberry"].iter().enumerate() {
+            b.add(w, Locator { a: i as u64, b: 0 });
+        }
+        b.write(&d, "k").unwrap();
+        let p = d.join("k.fst");
+        let mut bytes = std::fs::read(&p).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x5a;
+        std::fs::write(&p, bytes).unwrap();
+        assert!(Index::open(&d, "k").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn glob() {
+        let d = tmpdir("glob");
+        let mut b = IndexBuilder::new();
+        for (i, w) in ["apple", "ample", "ape", "ăn", "ấn", "đi", "x", "日本", "本"].iter().enumerate() {
+            b.add(w, Locator { a: i as u64, b: 0 });
+        }
+        b.write(&d, "k").unwrap();
+        let idx = Index::open(&d, "k").unwrap();
+        let find = |p: &str| -> Vec<String> {
+            let g = Glob::new(&fold::fold(p)).unwrap();
+            idx.search_folded(UntilSep(&g), 100).iter().map(|g| idx.entry(g.start).unwrap().0.to_string()).collect()
+        };
+        assert_eq!(find("a*e"), ["ample", "ape", "apple"]);
+        assert_eq!(find("a?e"), ["ape"]);
+        assert_eq!(find("a??le"), ["ample", "apple"]);
+        assert_eq!(find("?n"), ["ăn", "ấn"]);
+        assert_eq!(find("?"), ["x", "本"]);
+        assert_eq!(find("??"), ["ăn", "ấn", "đi", "日本"]);
+        assert_eq!(find("*本"), ["日本", "本"]);
+        assert_eq!(find("**p*"), ["ample", "ape", "apple"]);
+        assert!(find("z*").is_empty());
+        assert!(Glob::new(&"?".repeat(40)).is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 

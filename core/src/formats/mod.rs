@@ -58,6 +58,9 @@ pub trait Reader: Send + Sync {
     /// True when the HTML carries the dictionary's own design (MDict, Babylon, HTML
     /// StarDict). Such articles include their own headword and are not restyled.
     fn foreign(&self) -> bool;
+    /// Does, in the background once every dictionary is searchable, the opening work that
+    /// would otherwise make the first request wait.
+    fn warm(&self) {}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,10 +76,10 @@ pub enum Kind {
 impl Kind {
     /// Bumped when what this format's index or cached articles hold changes; its
     /// dictionaries are then rebuilt, the others kept. (Babylon, StarDict 1: other
-    /// forms open under their entry's headword.)
+    /// forms open under their entry's headword. DSL 1: subentry locators lose a flag bit.)
     pub fn revision(self) -> u32 {
         match self {
-            Kind::Babylon | Kind::StarDict => 1,
+            Kind::Babylon | Kind::StarDict | Kind::Dsl => 1,
             _ => 0,
         }
     }

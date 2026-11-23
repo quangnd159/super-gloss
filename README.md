@@ -2,7 +2,7 @@
 
 # Super Gloss
 
-A dictionary for macOS 15+. Type a word and every dictionary you own answers on a single page. The margin lists the dictionaries that answered and marks the one you're reading; click a name to go there.
+A dictionary for macOS 15+. Type a word and every dictionary you own answers on a single page, each entry under its dictionary's name. The count beside the search line says how many answered; click it, or press `⌘J`, to go straight to one.
 
 Super Gloss doesn't include any dictionaries. It reads the dictionary files you already have.
 
@@ -46,20 +46,24 @@ On first launch, drop a folder of dictionaries onto the window (or choose **File
 | --- | --- |
 | type | live results as you type; the gray completion shows the best match |
 | `Tab` / `Return` | accept the completion / look the word up |
-| `↓` `↑` (or `⌥⌘↓` `⌥⌘↑`) | jump to the next / previous dictionary |
+| `↓` `↑`, `Page Down` `Page Up`, `⌘↓` `⌘↑` | scroll the entries, as in any document; `⌘↓` `⌘↑` go to the bottom / top |
+| `⌥⌘↓` `⌥⌘↑` | jump to the next / previous dictionary |
 | `⌥↑` `⌥↓` | move along the word strip |
-| `⌘J` | go to a dictionary: type to narrow the margin's list (`ldoce`, `oald`, `thes`), `↑` `↓` to look through them, `Return` to stay, `Esc` to go back. In a narrow window it opens as a contents page |
-| `⌘[` `⌘]` | back / forward |
+| `⌘J` | go to a dictionary: a list of every dictionary on the page. Type to narrow it (`ldoce`, `oald`, `thes`), `↑` `↓` to look through them, `Return` to stay, `Esc` to go back |
+| `⌥⌘←` `⌥⌘→` | hide / show the dictionary you're reading |
+| `⌘[` `⌘]` (or a mouse's side buttons) | back / forward |
+| `Esc` or `⇧⌘H` | clear the search line and go home to your saved and recent words |
+| `⌘D` | save the word, or remove it; on the home page, the word you've picked with `↓` |
 | `⌘P` | pronounce |
 | `⌘R` | a random word |
 | `⌘=` `⌘-` `⌘0` | text size |
 | `⌘/` | every keyboard shortcut |
-| double-click a word in an entry | look it up |
+| double-click or right-click a word in an entry | look it up |
 | `⌥Space` (anywhere) | show or hide Super Gloss (change the Super Gloss Hotkey in Settings → General) |
 
 You can also look words up from other apps. Select text and choose **Services → Look Up in Super Gloss**, or open a URL like `supergloss://lookup?q=word`.
 
-To reorder or hide dictionaries, use **Settings → Sources**. Click the name above an entry to hide it; click it again, or the name in the margin, to show it. Some dictionaries come with an icon and some don't; to show names only, turn off **Show dictionary icons** in **Settings → General**.
+To reorder or hide dictionaries, use **Settings → Dictionaries**. Click the name above an entry to hide it (or press `⌥⌘←`); click it again, press `⌥⌘→`, or pick it in `⌘J`'s list, to show it. Some dictionaries come with an icon and some don't; to show names only, turn off **Show dictionary icons** in **Settings → General**.
 
 ## Layout
 

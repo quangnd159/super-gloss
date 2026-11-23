@@ -118,7 +118,7 @@ impl ChunkStore {
                 bail!("chunk {i} out of range");
             }
             let (s, e) = (self.table[i], self.table[i + 1]);
-            let comp = read_at(&self.file, s, (e - s) as usize)?;
+            let comp = read_at(&self.file, s, e.checked_sub(s).context("corrupt chunk table")? as usize)?;
             inflate_raw(&comp, CHUNK)
         })
     }
@@ -138,7 +138,7 @@ fn read_chunked(
     if off.checked_add(len).is_none_or(|e| e > total) {
         bail!("read {off}+{len} beyond end {total}");
     }
-    let mut out = Vec::with_capacity(len as usize);
+    let mut out = Vec::with_capacity(len.min(1 << 20) as usize);
     let mut pos = off;
     let end = off + len;
     while pos < end {
@@ -155,24 +155,39 @@ fn read_chunked(
     Ok(out)
 }
 
-pub fn inflate_raw(comp: &[u8], hint: usize) -> Result<Vec<u8>> {
+/// Inflates one chunk of at most `limit` bytes.
+pub fn inflate_raw(comp: &[u8], limit: usize) -> Result<Vec<u8>> {
     let mut d = Decompress::new(false);
-    let mut out = Vec::with_capacity(hint);
+    // The spare byte tells a chunk that fills `limit` from one that overflows it.
+    let mut out = Vec::with_capacity(limit + 1);
     loop {
         let consumed = d.total_in() as usize;
         let st = d.decompress_vec(&comp[consumed..], &mut out, FlushDecompress::Sync)?;
-        match st {
-            Status::StreamEnd => break,
-            _ if d.total_in() as usize >= comp.len() && out.len() < out.capacity() => break,
-            _ => out.reserve(out.capacity().max(4096)),
+        if out.len() > limit {
+            bail!("chunk inflates past {limit} bytes");
+        }
+        if st != Status::Ok || d.total_in() as usize >= comp.len() {
+            break;
         }
     }
     Ok(out)
 }
 
-pub fn inflate_zlib(comp: &[u8], hint: usize) -> Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(hint);
-    flate2::read::ZlibDecoder::new(comp).read_to_end(&mut out).context("zlib")?;
+/// Deflate expands data at most 1032-fold and LZO less, so a size claimed beyond this
+/// ratio is a lie, however large the buffer it asks for.
+const MAX_RATIO: u64 = 1100;
+
+pub fn plausible_size(comp: u64, size: u64) -> bool {
+    size <= comp.saturating_mul(MAX_RATIO)
+}
+
+/// Inflates a zlib stream that must hold exactly `size` bytes.
+pub fn inflate_zlib(comp: &[u8], size: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(size.min(1 << 20));
+    flate2::read::ZlibDecoder::new(comp).take(size as u64 + 1).read_to_end(&mut out).context("zlib")?;
+    if out.len() != size {
+        bail!("zlib block holds {} bytes, not {size}", out.len());
+    }
     Ok(out)
 }
 
@@ -283,13 +298,27 @@ impl Dictzip {
 /// Reads an entire gzip (or plain) file into memory.
 pub fn read_maybe_gzip(path: &Path) -> Result<Vec<u8>> {
     let raw = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    if raw.len() >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
-        let mut out = Vec::with_capacity(raw.len() * 4);
-        flate2::read::MultiGzDecoder::new(&raw[..]).read_to_end(&mut out).context("gunzip")?;
-        Ok(out)
+    if is_gzip(&raw) {
+        gunzip(&raw)
     } else {
         Ok(raw)
     }
+}
+
+fn is_gzip(b: &[u8]) -> bool {
+    b.starts_with(&[0x1f, 0x8b])
+}
+
+fn gunzip(raw: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(raw.len() * 4);
+    flate2::read::MultiGzDecoder::new(raw).read_to_end(&mut out).context("gunzip")?;
+    Ok(out)
+}
+
+fn write_store(cache_dir: &Path, name: &str, data: &[u8]) -> Result<()> {
+    let mut w = ChunkStoreWriter::create(cache_dir, name)?;
+    w.append(data)?;
+    w.finish()
 }
 
 /// Uniform random-access reader over a dictionary data file.
@@ -317,12 +346,23 @@ impl Source {
             return Ok(Source::Dz(dz));
         }
         if building || !cache_dir.join(format!("{store_name}.tab")).exists() {
-            let data = read_maybe_gzip(path)?;
-            let mut w = ChunkStoreWriter::create(cache_dir, store_name)?;
-            w.append(&data)?;
-            w.finish()?;
+            write_store(cache_dir, store_name, &read_maybe_gzip(path)?)?;
         }
         Ok(Source::Store(ChunkStore::open(cache_dir, store_name)?))
+    }
+
+    /// Reads the whole text at index time, and from that one decompression prepares what
+    /// [`Source::open`] needs later: a plain gzip file's chunk store named `store_name`.
+    pub fn prepare(path: &Path, cache_dir: &Path, store_name: &str) -> Result<Vec<u8>> {
+        let raw = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        if !is_gzip(&raw) {
+            return Ok(raw);
+        }
+        let data = gunzip(&raw)?;
+        if Dictzip::open(path)?.is_none() {
+            write_store(cache_dir, store_name, &data)?;
+        }
+        Ok(data)
     }
 
     pub fn len(&self) -> u64 {
@@ -348,11 +388,6 @@ impl Source {
             Source::Dz(d) => d.read(off, len),
             Source::Store(s) => s.read(off, len),
         }
-    }
-
-    /// Reads the whole content (index time only).
-    pub fn read_all(&self) -> Result<Vec<u8>> {
-        self.read(0, self.len())
     }
 }
 
@@ -380,5 +415,23 @@ mod tests {
         }
         assert!(s.read(s.total, 1).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn bombs_stop_at_their_limit() {
+        let deflate = |data: &[u8]| {
+            let mut e = flate2::write::DeflateEncoder::new(Vec::new(), Compression::best());
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        };
+        let zeros = vec![0u8; 16 << 20];
+        assert!(inflate_raw(&deflate(&zeros), CHUNK).is_err());
+        assert_eq!(inflate_raw(&deflate(&zeros[..CHUNK]), CHUNK).unwrap().len(), CHUNK);
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), Compression::best());
+        z.write_all(&zeros).unwrap();
+        let z = z.finish().unwrap();
+        assert!(inflate_zlib(&z, 1000).is_err());
+        assert_eq!(inflate_zlib(&z, zeros.len()).unwrap().len(), zeros.len());
+        assert!(!plausible_size(z.len() as u64, 1 << 40));
     }
 }

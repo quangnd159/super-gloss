@@ -1,5 +1,6 @@
 // Injected into every article iframe (not the main page). Reports its height,
-// routes link clicks to the app, and supports double-click lookup.
+// routes link clicks to the app, and supports looking up a word by double-click or
+// right-click.
 (() => {
   if (window.top === window) return;
   if (!/^sgloss:$/.test(location.protocol)) return;
@@ -177,7 +178,6 @@
     const foreign = document.body && document.body.classList.contains('sg-foreign');
     const s = document.createElement('style');
     s.textContent = `
-      html { transition: opacity 160ms ease-out; }
       html.sg-nofind { opacity: 0.3; }
       ::highlight(sg-find) { background-color: rgba(196, 71, 27, 0.17); }
       ::highlight(sg-find-current) { background-color: #c4471b; color: #fff; }
@@ -428,7 +428,13 @@
       // Anchors into this very article ("call_2#call_idmg_19" while reading "call").
       const t = id && byId(id);
       if (t || hash === 0) {
-        if (t) t.scrollIntoView({ behavior: 'smooth' });
+        // The page scrolls, keeping the target clear of the entry's pinned name.
+        if (t) {
+          const sy = window.scrollY;
+          const l = firstLine(t);
+          post({ type: 'goto', y: Math.round(t.getBoundingClientRect().top + sy),
+            mark: l && { x: l.l, y: l.t + sy, w: l.r - l.l, h: l.b - l.t } });
+        }
         return;
       }
       const word = decode(hash >= 0 ? target.slice(0, hash) : target).replace(/\/+$/, '');
@@ -446,29 +452,72 @@
     }
   }, true);
 
+  // A word or short phrase worth looking up, without the punctuation around it.
+  const lookable = (s) => {
+    const w = String(s || '').trim().replace(/^[\s"'“‘(\[]+|[\s"'”’)\].,;:!?]+$/g, '');
+    return w && w.length <= 48 && w.split(/\s+/).length <= 3 ? w : '';
+  };
+
   document.addEventListener('dblclick', (e) => {
     if (e.target.closest && e.target.closest('a, button, input, textarea, select')) return;
-    const sel = String(window.getSelection() || '').trim().replace(/^[\s"'“‘(\[]+|[\s"'”’)\].,;:!?]+$/g, '');
-    if (sel && sel.length <= 48 && sel.split(/\s+/).length <= 3) post({ type: 'lookup', word: sel });
+    const w = lookable(window.getSelection());
+    if (w) post({ type: 'lookup', word: w });
+  });
+
+  // The word under the pointer, selected; null off the text.
+  const wordAt = (x, y) => {
+    const r = document.caretRangeFromPoint(x, y);
+    const node = r && r.startContainer;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+    const at = r.startOffset;
+    for (const s of new Intl.Segmenter(undefined, { granularity: 'word' }).segment(node.data)) {
+      if (!s.isWordLike || at < s.index || at > s.index + s.segment.length) continue;
+      const range = document.createRange();
+      range.setStart(node, s.index);
+      range.setEnd(node, s.index + s.segment.length);
+      const hit = Array.from(range.getClientRects()).some((b) =>
+        x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1);
+      if (!hit) return null;
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return s.segment;
+    }
+    return null;
+  };
+
+  // A right-click offers the selection, or else the word under the pointer, to look up:
+  // the menu's first item (ArticleView). Told to the app directly, so it is there
+  // before the menu opens.
+  document.addEventListener('contextmenu', (e) => {
+    const selected = lookable(window.getSelection());
+    const word = selected || lookable(wordAt(e.clientX, e.clientY));
+    try { window.webkit.messageHandlers.sg.postMessage({ type: 'menu', word }); } catch (_) {}
   });
 
   // A press anywhere in an article: the page closes what floats over it.
   document.addEventListener('mousedown', (e) => {
     if (e.button === 0) post({ type: 'press' });
   }, true);
+  // The wheel over an article scrolls the page, which then stops holding a position.
+  let wheeled = 0;
+  window.addEventListener('wheel', () => {
+    const t = performance.now();
+    if (t - wheeled > 150) { wheeled = t; post({ type: 'wheel' }); }
+  }, { passive: true });
 
   // Typing while an article has focus goes back to the search field (or the find
-  // line, which also takes Return and ⇧Return to step through matches). The arrows
-  // keep their meaning there: ↑↓ between dictionaries, ⌥↑↓ along the related words.
+  // line, which also takes Return and ⇧Return to step through matches). ↑↓ and Space
+  // scroll, as in any document; ⌥↑↓ keep their meaning, along the related words.
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey) return;
-    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.shiftKey) {
-      post({ type: 'key', key: (e.altKey ? 'Alt' : '') + e.key });
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.shiftKey && e.altKey) {
+      post({ type: 'key', key: 'Alt' + e.key });
       e.preventDefault();
       return;
     }
     if (e.altKey) return;
-    if (e.key.length === 1 || e.key === 'Escape' || e.key === 'Enter') {
+    if ((e.key.length === 1 && e.key !== ' ') || e.key === 'Escape' || e.key === 'Enter') {
       post({ type: 'key', key: e.key === 'Enter' && e.shiftKey ? 'ShiftEnter' : e.key });
       e.preventDefault();
     }

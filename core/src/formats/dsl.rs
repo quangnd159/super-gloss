@@ -4,18 +4,16 @@
 use super::dsl_render::{headword_variants, plain_text, strip_comments, Renderer};
 use super::{BuildCtx, DictInfo, Reader};
 use crate::index::{Index, IndexBuilder, Locator};
-use crate::store::{read_maybe_gzip, Source};
-use crate::util::{decode_text_auto, find_case_insensitive, safe_join};
-use anyhow::{Context, Result};
+use crate::store::{plausible_size, read_maybe_gzip, Source};
+use crate::util::{decode_text_auto, file_below};
+use anyhow::{bail, Context, Result};
 use encoding_rs::Encoding;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-pub const SUB_FLAG: u64 = 1 << 40;
-const LEN_MASK: u64 = (1 << 40) - 1;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DslEnc {
@@ -308,12 +306,8 @@ fn scan(
     hdr
 }
 
-fn load_text(path: &Path) -> Result<Vec<u8>> {
-    read_maybe_gzip(path)
-}
-
 pub fn build(path: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
-    let data = load_text(path)?;
+    let data = Source::prepare(path, ctx.dir, "text")?;
     let (enc, start) = detect_encoding(&data);
     let mut b = IndexBuilder::new();
     let mut add = |raw: &str, loc: Locator| {
@@ -332,7 +326,7 @@ pub fn build(path: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
             }
             for (h, ss, se) in subs {
                 if se > ss {
-                    add(h, Locator { a: *ss as u64, b: (se - ss) as u64 | SUB_FLAG });
+                    add(h, Locator { a: *ss as u64, b: (se - ss) as u64 });
                 }
             }
         },
@@ -341,8 +335,6 @@ pub fn build(path: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
     drop(add);
     let count = b.len();
     b.write(ctx.dir, "keys")?;
-    // Random access to the text (dictzip, plain, or converted gzip).
-    let _ = Source::open(path, ctx.dir, "text", true)?;
 
     let stem = stem_path(path);
     let name = if hdr.name.is_empty() {
@@ -364,7 +356,7 @@ pub fn build(path: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
 
 fn load_abbreviations(path: &Path) -> HashMap<String, String> {
     let mut m = HashMap::new();
-    let Ok(data) = load_text(path) else { return m };
+    let Ok(data) = read_maybe_gzip(path) else { return m };
     let (enc, start) = detect_encoding(&data);
     scan(
         &data,
@@ -391,8 +383,85 @@ fn load_abbreviations(path: &Path) -> HashMap<String, String> {
 }
 
 enum Res {
-    Zip { path: PathBuf, archive: Mutex<Option<(zip::ZipArchive<File>, HashMap<String, usize>)>> },
+    /// Opened on first use or when the library warms its dictionaries, whichever comes
+    /// first: reading a large archive's directory must not delay the dictionary's search.
+    Zip(PathBuf, OnceLock<Option<Zip>>),
     Dir(PathBuf),
+}
+
+/// A `.files.zip`, its directory read once. Each request reads through its own clone of
+/// the archive, so requests never wait on one another.
+struct Zip {
+    archive: zip::ZipArchive<SharedFile>,
+    names: HashMap<String, usize>,
+}
+
+impl Zip {
+    fn open(path: &Path) -> Result<Zip> {
+        let file = File::open(path)?;
+        let len = file.metadata()?.len();
+        let archive = zip::ZipArchive::new(SharedFile { file: Arc::new(file), len, pos: 0 })
+            .with_context(|| format!("zip {}", path.display()))?;
+        let mut names = HashMap::with_capacity(archive.len());
+        for i in 0..archive.len() {
+            if let Some(Ok(n)) = archive.name_for_index(i) {
+                let n = n.replace('\\', "/");
+                names.insert(n.to_lowercase(), i);
+                // Also index by bare file name for archives with a top-level folder.
+                if let Some(base) = n.rsplit('/').next() {
+                    names.entry(base.to_lowercase()).or_insert(i);
+                }
+            }
+        }
+        Ok(Zip { archive, names })
+    }
+
+    fn get(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        let key = name.replace('\\', "/").trim_start_matches('/').to_lowercase();
+        let Some(&i) = self.names.get(&key) else { return Ok(None) };
+        let mut archive = self.archive.clone();
+        let mut f = archive.by_index(i)?;
+        // The sizes come from the archive: read no more than it declares, and no more than
+        // its compressed bytes can honestly hold.
+        let size = f.size();
+        if !plausible_size(f.compressed_size(), size) {
+            bail!("{name}: {} bytes can't hold {size}", f.compressed_size());
+        }
+        let mut buf = Vec::with_capacity(size.min(1 << 20) as usize);
+        f.by_ref().take(size + 1).read_to_end(&mut buf)?;
+        if buf.len() as u64 != size {
+            bail!("{name}: holds {} bytes, not {size}", buf.len());
+        }
+        Ok(Some(buf))
+    }
+}
+
+/// A file read at a position of its own: clones share the descriptor, not the cursor.
+#[derive(Clone)]
+struct SharedFile {
+    file: Arc<File>,
+    len: u64,
+    pos: u64,
+}
+
+impl Read for SharedFile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.file.read_at(buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for SharedFile {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let pos = match to {
+            SeekFrom::Start(p) => Some(p),
+            SeekFrom::End(d) => self.len.checked_add_signed(d),
+            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        };
+        self.pos = pos.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"))?;
+        Ok(self.pos)
+    }
 }
 
 pub struct DslReader {
@@ -410,7 +479,7 @@ pub fn open(path: &Path, cache: &Path, info: &DictInfo) -> Result<Box<dyn Reader
     let mut res = Vec::new();
     for p in resource_paths(path) {
         if p.is_file() {
-            res.push(Res::Zip { path: p, archive: Mutex::new(None) });
+            res.push(Res::Zip(p, OnceLock::new()));
         } else if p.is_dir() {
             res.push(Res::Dir(p));
         }
@@ -418,75 +487,41 @@ pub fn open(path: &Path, cache: &Path, info: &DictInfo) -> Result<Box<dyn Reader
     Ok(Box::new(DslReader { text, enc, abbr, res, dir: path.parent().unwrap_or(Path::new("/")).to_path_buf() }))
 }
 
-impl DslReader {
-    fn zip_get(
-        path: &Path,
-        cell: &Mutex<Option<(zip::ZipArchive<File>, HashMap<String, usize>)>>,
-        name: &str,
-    ) -> Result<Option<Vec<u8>>> {
-        let mut g = cell.lock().unwrap();
-        if g.is_none() {
-            let f = File::open(path)?;
-            let z = zip::ZipArchive::new(f).with_context(|| format!("zip {}", path.display()))?;
-            let mut names = HashMap::with_capacity(z.len());
-            for i in 0..z.len() {
-                if let Some(Ok(n)) = z.name_for_index(i) {
-                    let n = n.replace('\\', "/");
-                    names.insert(n.to_lowercase(), i);
-                    // Also index by bare file name for archives with a top-level folder.
-                    if let Some(base) = n.rsplit('/').next() {
-                        names.entry(base.to_lowercase()).or_insert(i);
-                    }
-                }
-            }
-            *g = Some((z, names));
-        }
-        let (z, names) = g.as_mut().unwrap();
-        let key = name.replace('\\', "/").trim_start_matches('/').to_lowercase();
-        let Some(&i) = names.get(&key) else { return Ok(None) };
-        let mut f = z.by_index(i)?;
-        let mut buf = Vec::with_capacity(f.size() as usize);
-        f.read_to_end(&mut buf)?;
-        Ok(Some(buf))
-    }
+/// The archive at `path`, opened once. An unreadable one costs the dictionary its pictures
+/// and sounds, not its text.
+fn zip_at<'a>(path: &Path, cell: &'a OnceLock<Option<Zip>>) -> Option<&'a Zip> {
+    cell.get_or_init(|| Zip::open(path).ok()).as_ref()
 }
 
 impl Reader for DslReader {
+    fn warm(&self) {
+        for r in &self.res {
+            if let Res::Zip(p, z) = r {
+                zip_at(p, z);
+            }
+        }
+    }
+
     fn article(&self, _index: &Index, word: &str, loc: Locator) -> Result<String> {
-        let len = loc.b & LEN_MASK;
-        let raw = self.text.read(loc.a, len)?;
+        let raw = self.text.read(loc.a, loc.b)?;
         let body = self.enc.decode(&raw);
         Ok(Renderer { headword: word, abbr: &self.abbr }.render(&body))
     }
 
     fn resource(&self, path: &str) -> Result<Option<Vec<u8>>> {
         for r in &self.res {
-            match r {
-                Res::Zip { path: zp, archive } => {
-                    if let Some(b) = Self::zip_get(zp, archive, path)? {
-                        return Ok(Some(b));
-                    }
-                }
-                Res::Dir(d) => {
-                    if let Some(p) = safe_join(d, path) {
-                        if p.is_file() {
-                            return Ok(Some(std::fs::read(p)?));
-                        }
-                    }
-                }
+            let found = match r {
+                Res::Zip(p, z) => match zip_at(p, z) {
+                    Some(z) => z.get(path)?,
+                    None => None,
+                },
+                Res::Dir(d) => file_below(d, path).map(std::fs::read).transpose()?,
+            };
+            if found.is_some() {
+                return Ok(found);
             }
         }
-        if let Some(p) = safe_join(&self.dir, path) {
-            if p.is_file() {
-                return Ok(Some(std::fs::read(p)?));
-            }
-            if let (Some(parent), Some(n)) = (p.parent(), p.file_name()) {
-                if let Some(f) = find_case_insensitive(parent, &n.to_string_lossy()) {
-                    return Ok(Some(std::fs::read(f)?));
-                }
-            }
-        }
-        Ok(None)
+        Ok(file_below(&self.dir, path).map(std::fs::read).transpose()?)
     }
 
     fn foreign(&self) -> bool {

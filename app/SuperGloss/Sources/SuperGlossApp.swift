@@ -63,20 +63,34 @@ struct AppCommands: Commands {
             Button("Forward") { model.goForward() }
                 .keyboardShortcut("]")
                 .disabled(model.forwardStack.isEmpty)
+            Button("Home") { model.clear() }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                .disabled(model.query.isEmpty)
             Divider()
-            Button("Next Source") { model.stepSource(1) }
+            Button("Next Dictionary") { model.stepSource(1) }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-            Button("Previous Source") { model.stepSource(-1) }
+                .disabled(!model.canFind)
+            Button("Previous Dictionary") { model.stepSource(-1) }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(!model.canFind)
             Button("Go to Dictionary…") { model.startIndex() }
                 .keyboardShortcut("j")
                 .disabled(!model.canFind)
+            // Named for the dictionary they act on, as a click on its name would.
+            let entry = model.canFind ? model.current : nil
+            Button(entry.map { "Hide \($0.name)" } ?? "Hide Entry") { model.hideCurrent(true) }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .disabled(entry?.hidden != false)
+            Button(entry.map { "Show \($0.name)" } ?? "Show Entry") { model.hideCurrent(false) }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(entry?.hidden != true)
             Divider()
             Button("Pronounce") { model.article?.pronounce() }
                 .keyboardShortcut("p")
-            Button(model.shownIsSaved ? "Remove from Saved" : "Save Word") { model.toggleSaved() }
+                .disabled(!model.canFind)
+            Button(model.focusIsSaved ? "Remove from Saved" : "Save Word") { model.toggleSaved() }
                 .keyboardShortcut("d")
-                .disabled(model.shownWord == nil)
+                .disabled(model.focusWord == nil)
             Button("Copy Saved Words") { model.copySaved() }
                 .disabled(model.saved.isEmpty)
             Button("Surprise Me") { model.surprise() }
@@ -93,10 +107,13 @@ struct AppCommands: Commands {
         CommandGroup(after: .toolbar) {
             Button("Bigger Text") { model.zoom += 0.1 }
                 .keyboardShortcut("=")
+                .disabled(model.zoom >= 2)
             Button("Smaller Text") { model.zoom -= 0.1 }
                 .keyboardShortcut("-")
+                .disabled(model.zoom <= 0.7)
             Button("Actual Size") { model.zoom = 1 }
                 .keyboardShortcut("0")
+                .disabled(model.zoom == 1)
             Divider()
         }
     }

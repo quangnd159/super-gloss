@@ -386,6 +386,7 @@ dependencies = [
  "flate2",
  "fst",
  "lewton",
+ "libc",
  "lzokay-native",
  "memmap2",
  "percent-encoding",

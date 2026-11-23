@@ -7,11 +7,15 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             SourcesPane(model: model)
-                .tabItem { Label("Sources", systemImage: "books.vertical") }
+                .frame(width: 640, height: 500)
+                .tabItem { Label("Dictionaries", systemImage: "books.vertical") }
+            // Only as tall as its rows: the window fits each pane, as macOS settings do.
             GeneralPane(model: model)
+                .scrollDisabled(true)
+                .frame(width: 640)
+                .fixedSize(horizontal: false, vertical: true)
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 640, height: 500)
     }
 }
 
@@ -27,38 +31,35 @@ struct SourcesPane: View {
                     }
                     .onMove { model.move(fromOffsets: $0, toOffset: $1) }
                 } header: {
-                    Text("Articles appear in this order. Drag to rearrange.")
+                    Text("Reading order")
                 }
                 Section("Locations") {
                     ForEach(model.roots, id: \.self) { root in
                         HStack {
                             Image(systemName: "folder")
                                 .foregroundStyle(.secondary)
-                            Text(root)
+                            Text((root as NSString).abbreviatingWithTildeInPath)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                .help(root)
                             Spacer()
                             Button {
                                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: root)
                             } label: { Image(systemName: "arrow.right.circle") }
                                 .buttonStyle(.borderless)
                                 .help("Show in Finder")
+                                .accessibilityLabel("Show in Finder")
                             Button {
                                 model.removeRoot(root)
                             } label: { Image(systemName: "minus.circle") }
                                 .buttonStyle(.borderless)
                                 .help("Stop reading from this location")
+                                .accessibilityLabel("Remove location")
                         }
                     }
                 }
             }
-            HStack {
-                Button("Add Dictionaries…") { chooseDictionaries() }
-                Spacer()
-                Text("Formats: MDict · StarDict · DSL · Babylon · dictd · XDXF")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Button("Add Dictionaries…") { chooseDictionaries() }
         }
         .padding(16)
     }
@@ -92,14 +93,22 @@ struct SourceRow: View {
                 .lineLimit(2)
             }
             Spacer()
-            Toggle("", isOn: Binding(get: { dict.enabled }, set: { model.setEnabled(dict.id, $0) }))
+            Toggle(dict.name, isOn: Binding(get: { dict.enabled }, set: { model.setEnabled(dict.id, $0) }))
                 .toggleStyle(.switch)
-                .controlSize(.small)
+                .controlSize(.mini)
                 .labelsHidden()
         }
         .padding(.vertical, 2)
         .help(dict.about.isEmpty ? dict.path : dict.about)
         .contextMenu {
+            // Reordering without a long drag, and without the mouse (VoiceOver's actions too).
+            let i = model.dictionaries.firstIndex { $0.id == dict.id } ?? 0
+            let last = model.dictionaries.count - 1
+            Button("Move to Top") { model.move(fromOffsets: [i], toOffset: 0) }.disabled(i == 0)
+            Button("Move Up") { model.move(fromOffsets: [i], toOffset: i - 1) }.disabled(i == 0)
+            Button("Move Down") { model.move(fromOffsets: [i], toOffset: i + 2) }.disabled(i >= last)
+            Button("Move to Bottom") { model.move(fromOffsets: [i], toOffset: last + 1) }.disabled(i >= last)
+            Divider()
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: dict.path)]) }
             Button("Rebuild Index") { model.reindex(dict.id) }
         }
@@ -131,11 +140,19 @@ struct DictIcon: View {
 struct GeneralPane: View {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
-    @State private var hotKey: HotKeyPreset = AppModel.shared.prefs.hotKey
-    @State private var zoom: Double = AppModel.shared.prefs.zoom
-    @State private var appearance: AppearanceMode = AppModel.shared.prefs.appearance
-    @State private var showIcons: Bool = AppModel.shared.prefs.showIcons
-    @State private var checksForUpdates: Bool = AppModel.shared.prefs.checksForUpdates
+    @State private var hotKey: HotKeyPreset
+    @State private var hotKeyTaken = HotKey.shared.taken
+    @State private var appearance: AppearanceMode
+    @State private var showIcons: Bool
+    @State private var checksForUpdates: Bool
+
+    init(model: AppModel) {
+        self.model = model
+        _hotKey = State(initialValue: model.prefs.hotKey)
+        _appearance = State(initialValue: model.prefs.appearance)
+        _showIcons = State(initialValue: model.prefs.showIcons)
+        _checksForUpdates = State(initialValue: model.prefs.checksForUpdates)
+    }
 
     var body: some View {
         Form {
@@ -146,6 +163,11 @@ struct GeneralPane: View {
                 .onChange(of: hotKey) {
                     model.prefs.hotKey = hotKey
                     HotKey.shared.register(hotKey)
+                    hotKeyTaken = HotKey.shared.taken
+                }
+                if hotKeyTaken {
+                    Text("\(hotKey.label) is taken by another app. Choose another.")
+                        .foregroundStyle(.red)
                 }
                 LabeledContent("Keyboard shortcuts") {
                     Button("Show All…") { openWindow(id: "shortcuts") }
@@ -161,14 +183,14 @@ struct GeneralPane: View {
                 }
                 Toggle("Show dictionary icons", isOn: $showIcons)
                     .onChange(of: showIcons) { model.showIcons = showIcons }
-                LabeledContent("Text size") {
-                    HStack {
-                        Image(systemName: "textformat.size.smaller")
-                        Slider(value: $zoom, in: 0.7...2.0, step: 0.05)
-                            .onChange(of: zoom) { model.zoom = zoom }
-                        Image(systemName: "textformat.size.larger")
-                    }
+                Slider(value: Binding(get: { model.zoom }, set: { model.zoom = $0 }), in: 0.7...2.0, step: 0.05) {
+                    Text("Text size")
+                } minimumValueLabel: {
+                    Image(systemName: "textformat.size.smaller")
+                } maximumValueLabel: {
+                    Image(systemName: "textformat.size.larger")
                 }
+                .accessibilityValue(Text(model.zoom, format: .percent))
             }
             Section {
                 Toggle("Update automatically", isOn: $checksForUpdates)

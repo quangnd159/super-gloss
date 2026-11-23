@@ -4,7 +4,7 @@ use super::markup::{media_html, normalize_links, pango_to_html, plain_to_html, x
 use super::{BuildCtx, DictInfo, Reader};
 use crate::index::{Index, IndexBuilder, Locator};
 use crate::store::{read_maybe_gzip, Source};
-use crate::util::{be32, be64, html_escape, safe_join};
+use crate::util::{be32, be64, file_below, html_escape};
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -229,17 +229,10 @@ impl Reader for StarDictReader {
     }
 
     fn resource(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        let Some(p) = safe_join(&self.res_dir, path) else { return Ok(None) };
-        if p.is_file() {
-            return Ok(Some(std::fs::read(p)?));
+        match file_below(&self.res_dir, path) {
+            Some(p) => Ok(Some(std::fs::read(p)?)),
+            None => Ok(None),
         }
-        // Case-insensitive fallback for files on case-sensitive volumes.
-        if let (Some(parent), Some(name)) = (p.parent(), p.file_name()) {
-            if let Some(f) = crate::util::find_case_insensitive(parent, &name.to_string_lossy()) {
-                return Ok(Some(std::fs::read(f)?));
-            }
-        }
-        Ok(None)
     }
 
     fn foreign(&self) -> bool {

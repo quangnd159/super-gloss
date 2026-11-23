@@ -1,13 +1,17 @@
 // Main reading surface. Native calls `sg.show(payload)`; each source renders in an
 // isolated iframe (its own CSS/JS) that reports height and actions via postMessage.
 (() => {
-  const col = document.getElementById('col');
+  let col = document.getElementById('col');
   const via = document.getElementById('via');
   const ix = document.getElementById('index');
-  const frames = new Map(); // contentWindow -> {id, iframe, section, sound}
+  const frames = new Map(); // iframe -> {id, iframe, section, sound, …}
   const collapsed = new Set();
   let generation = 0;
   let shownWord = null;
+  let list = []; // the page's sections, in order
+  let ghost = null; // the page being replaced, kept on screen until the new one is ready
+  const still = matchMedia('(prefers-reduced-motion: reduce)');
+  const glide = () => (still.matches ? 'auto' : 'smooth');
 
   const native = (msg) => {
     try { window.webkit.messageHandlers.sg.postMessage(msg); } catch (_) {}
@@ -20,10 +24,42 @@
     return e;
   };
 
+  // The page on screen stays there, inert, while the next one lays out out of sight:
+  // typing goes from word to word without a blank in between.
+  function keepOnScreen() {
+    if (col.classList.contains('loading') || !col.firstChild) {
+      col.replaceChildren(); // never shown: the ghost already stands for the page
+      return;
+    }
+    dropGhost();
+    const r = col.getBoundingClientRect();
+    const name = pinned && pinned.firstChild;
+    const at = name && name.getBoundingClientRect().top;
+    ghost = col;
+    ghost.removeAttribute('id');
+    ghost.className = 'ghost';
+    Object.assign(ghost.style, { top: r.top + 'px', left: r.left + 'px', width: r.width + 'px' });
+    // A pinned name has nothing to stick to in a fixed layer: keep it where it was.
+    if (name) {
+      const d = at - name.getBoundingClientRect().top;
+      if (d) name.style.transform = `translateY(${d}px)`;
+    }
+    col = el('main');
+    col.id = 'col';
+    ghost.after(col);
+  }
+  function dropGhost() {
+    if (ghost) ghost.remove();
+    ghost = null;
+  }
+
   function show(p) {
+    if (placeTimer) reportPlace(); // where the reader left the page being replaced
     const gen = ++generation;
     indexClose('stay', true); // the list was for the page being replaced
     frames.clear();
+    keepOnScreen();
+    pinned = null;
     shownWord = p.word;
     icons(p.icons !== false);
     if (p.via) {
@@ -36,6 +72,7 @@
     let landSection = null;
     const next = document.createDocumentFragment();
     const pending = new Set();
+    list = [];
     for (const h of p.hits) {
       const s = el('section', 'src');
       s.dataset.id = h.id;
@@ -44,7 +81,8 @@
       if (hidden) s.classList.add('collapsed');
       // The entry opens with its dictionary's name; a click on it hides or shows the entry.
       const name = el('h2', 'name');
-      const tag = el('span', 'tag');
+      const tag = el('button', 'tag');
+      tag.type = 'button';
       tag.title = h.name + (hidden ? ' — click to show' : ' — click to hide');
       tag.setAttribute('aria-expanded', String(!hidden));
       if (h.icon) tag.append(icon(h.icon));
@@ -56,13 +94,17 @@
       const f = el('iframe');
       f.setAttribute('scrolling', 'no');
       f.setAttribute('title', h.name);
-      if (land && land.dict === h.id) landSection = s;
-      const anchored = land && land.dict === h.id && land.offset == null;
-      f.src = h.url + (anchored ? '#' + encodeURIComponent(JSON.stringify({ id: land.id, find: land.find })) : '');
+      const landing = land && land.dict === h.id;
+      if (landing) landSection = s;
+      const anchored = landing && land.offset == null;
+      const url = h.url + (anchored ? '#' + encodeURIComponent(JSON.stringify({ id: land.id, find: land.find })) : '');
+      // A hidden entry loads when it is shown.
+      if (hidden && !landing) f.dataset.src = url;
+      else { f.src = url; pending.add(f); }
       b.append(f);
       s.append(name, b);
       next.append(s);
-      pending.add(f);
+      list.push(s);
       // Follow the anchor while the frame settles: from its first report, for a moment.
       const rec = { id: h.id, iframe: f, section: s, sound: null, anchorUntil: anchored ? Infinity : 0, marked: false, found: null };
       s._rec = rec;
@@ -73,6 +115,8 @@
     find.cur = null;
     find.from = 0;
     find.settled = !find.q;
+    clearTimeout(find.timer);
+    if (find.q) find.timer = setTimeout(settle, 600); // a frame that never answers
     col.classList.add('loading');
     col.replaceChildren(next);
     jumpTarget = null;
@@ -83,22 +127,24 @@
       jumpTarget = landSection;
       jumpOffset = land.offset + TOP;
       jumpUntil = performance.now() + 2000;
-      window.scrollTo(0, Math.max(0, jumpTop(sections())));
+      window.scrollTo(0, Math.max(0, jumpTop()));
     }
-    indexBuild(sections());
+    indexBuild(list);
+    reportCurrent();
     // Reveal once every frame has reported a height, or after a short grace period.
     col._onReveal = null;
     const reveal = () => {
-      if (gen !== generation) return;
+      if (gen !== generation || !col.classList.contains('loading')) return;
       col.classList.remove('loading');
+      dropGhost();
       const then = col._onReveal;
       col._onReveal = null;
       if (then) then();
     };
-    if (pending.size === 0) reveal();
-    col._pending = pending;
+    col._pending = pending.size ? pending : null;
     col._reveal = reveal;
-    setTimeout(reveal, 220);
+    if (!pending.size) reveal();
+    else setTimeout(reveal, 220);
   }
 
   const icon = (src) => {
@@ -113,14 +159,46 @@
     const on = !collapsed.has(h.id);
     if (on) collapsed.add(h.id); else collapsed.delete(h.id);
     s.classList.toggle('collapsed', on);
+    const f = s.querySelector('iframe');
+    if (!on && f.dataset.src) {
+      f.src = f.dataset.src;
+      delete f.dataset.src;
+    }
     const tag = s.querySelector('.tag');
     tag.title = h.name + (on ? ' — click to show' : ' — click to hide');
     tag.setAttribute('aria-expanded', String(!on));
     if (s._row) s._row.el.classList.toggle('hid', on);
+    // Hiding the entry being read (its name pinned above the text) leaves the name in
+    // view, where showing it again is one click or key away.
+    if (on && s.offsetTop - TOP < window.scrollY) {
+      jumpTarget = null;
+      window.scrollTo(0, Math.max(0, s.offsetTop - TOP));
+    }
     if (find.q) {
       if (on && find.cur && find.cur.f.section === s) find.cur = null;
       report();
     }
+    reportCurrent();
+  }
+
+  // The entry the keyboard's Hide and Show act on: the one selected in ⌘J's list while it
+  // is open, else the one being read. Native names it in the Go menu.
+  function current(i = currentIndex()) {
+    if (index.open) return index.rows[index.sel] ? index.rows[index.sel].section : null;
+    return list.length ? list[i] : null;
+  }
+  let lastCurrent = '';
+  function reportCurrent(i) {
+    const s = current(i);
+    const msg = s ? { type: 'current', name: s._hit.short, hidden: s.classList.contains('collapsed') } : { type: 'current' };
+    const key = JSON.stringify(msg);
+    if (key === lastCurrent) return;
+    lastCurrent = key;
+    native(msg);
+  }
+  function hideCurrent(hide) {
+    const s = current();
+    if (s && s.classList.contains('collapsed') !== hide) toggle(s, s._hit);
   }
 
   function frameFor(source) {
@@ -138,13 +216,11 @@
     switch (m.type) {
       case 'height':
         setHeight(f.iframe, m.h);
-        if (col._pending) {
-          col._pending.delete(f.iframe);
-          if (col._pending.size === 0) {
-            // Everything has a height: hold a restored position only a moment longer.
-            jumpUntil = Math.min(jumpUntil, performance.now() + 250);
-            col._reveal();
-          }
+        if (col._pending && col._pending.delete(f.iframe) && !col._pending.size) {
+          col._pending = null;
+          // Everything has a height: hold a restored position only a moment longer.
+          jumpUntil = Math.min(jumpUntil, performance.now() + 250);
+          col._reveal();
         }
         break;
       case 'ready':
@@ -174,8 +250,18 @@
           else mark(f, m.mark);
         }
         break;
+      case 'goto':
+        // A link to elsewhere in the same entry: the page scrolls, not the frame.
+        jumpTarget = null;
+        window.scrollTo({ top: Math.max(0, landingTop(f, m.y)), behavior: glide() });
+        if (m.mark) mark(f, m.mark);
+        break;
       case 'press':
+        cancelHold();
         indexClose('stay', true);
+        break;
+      case 'wheel':
+        cancelHold();
         break;
       case 'lookup':
         reportPlace();
@@ -191,19 +277,33 @@
     }
   });
   // With the page itself in focus (a click between entries, on a name), keys go where an
-  // entry's go (frame.js keeps the same rules): the arrows step, typing searches.
+  // entry's go (frame.js keeps the same rules): ↑↓ and Space scroll, ⌥↑↓ go along the
+  // related words, typing searches. While ⌘J's list is open, ↑↓ go through it.
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey) return;
     let key = null;
-    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.shiftKey) key = (e.altKey ? 'Alt' : '') + e.key;
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.shiftKey) {
+      if (!e.altKey && !index.open) return;
+      key = (e.altKey ? 'Alt' : '') + e.key;
+    }
     else if (e.altKey) return;
-    else if (e.key.length === 1 || e.key === 'Escape' || e.key === 'Enter') {
+    else if ((e.key.length === 1 && e.key !== ' ') || e.key === 'Escape' || e.key === 'Enter') {
       key = e.key === 'Enter' && e.shiftKey ? 'ShiftEnter' : e.key;
     }
     if (key) { native({ type: 'key', key }); e.preventDefault(); }
   });
 
-  function sections() { return Array.from(col.querySelectorAll('.src')); }
+  // A right-click on the page itself (a name, the space between entries) has no word to
+  // offer; an entry's own right-click says which it has (frame.js).
+  document.addEventListener('contextmenu', () => native({ type: 'menu', word: '' }));
+
+  // The reader takes over: a position being held while frames settle is let go.
+  function cancelHold() {
+    jumpTarget = null;
+    jumpUntil = 0;
+  }
+  window.addEventListener('wheel', cancelHold, { passive: true });
+  document.addEventListener('mousedown', cancelHold, true);
 
   // ---------- find in entries ----------
   // Each frame searches its own text and paints its own highlights; this side
@@ -216,7 +316,7 @@
   function sendCurrent(f, i) {
     try { f.iframe.contentWindow.postMessage({ sg: { type: 'findCurrent', i } }, '*'); } catch (_) {}
   }
-  function records() { return sections().map((s) => s._rec).filter(Boolean); }
+  function records() { return list.map((s) => s._rec); }
   function frameTop(f) { return f.iframe.getBoundingClientRect().top + window.scrollY; }
   function visible(f) { return !f.section.classList.contains('collapsed'); }
 
@@ -284,7 +384,7 @@
     const vh = window.innerHeight;
     if (y >= top + 48 && y <= top + vh - 96) return;
     jumpTarget = null;
-    window.scrollTo({ top: Math.max(0, y - vh * 0.36), behavior: 'smooth' });
+    window.scrollTo(0, Math.max(0, y - vh * 0.36));
   }
 
   function findStep(dir) {
@@ -320,7 +420,7 @@
   }
 
   // Each entry's name carries its count; entries without a match recede, in the page and
-  // in the margin's list (the frame dims its own content: ancestor opacity doesn't reach
+  // in ⌘J's list (the frame dims its own content: ancestor opacity doesn't reach
   // out-of-process frames).
   function paintCount(f) {
     const tag = f.section.querySelector('.tag');
@@ -341,23 +441,31 @@
   let jumpTarget = null;
   let jumpOffset = 0; // from the target section's top, for anchors inside it
   let jumpUntil = 0;
-  let jumpSmooth = true; // keyboard previews land at once; jumps glide
+  let jumpGlides = false; // a click's jump glides; the keyboard's land at once
 
-  function jumpTop(list) {
+  function jumpTop() {
     return list[0] === jumpTarget && !jumpOffset ? 0 : jumpTarget.offsetTop + jumpOffset - TOP;
   }
 
-  // `y` is the anchor's position inside the frame. Near the top of its entry,
-  // land on the section so the dictionary's name stays in view.
+  // Where the page scrolls to bring `y`, a position inside the frame, to the top: just
+  // under the entry's pinned name. Near the top of its entry, the section's own top, so
+  // the name stays where it is.
+  function landingTop(f, y) {
+    if (y < 48) return f.section.offsetTop - TOP;
+    const bar = f.section.firstChild.offsetHeight + 12;
+    return f.iframe.getBoundingClientRect().top + window.scrollY + y - bar;
+  }
+
   function scrollToAnchor(f, y) {
     jumpTarget = f.section;
-    jumpSmooth = true;
-    jumpOffset = y < 48 ? 0 : f.iframe.getBoundingClientRect().top + window.scrollY + y - 18 - f.section.offsetTop;
+    jumpGlides = false;
+    jumpOffset = landingTop(f, y) + TOP - f.section.offsetTop;
     jumpUntil = performance.now() + 900;
-    window.scrollTo(0, Math.max(0, jumpTop(sections())));
+    window.scrollTo(0, Math.max(0, jumpTop()));
   }
 
   function mark(f, m) {
+    if (!f.iframe.isConnected) return;
     const el = document.createElement('div');
     el.className = 'mark';
     el.style.left = (f.iframe.offsetLeft + m.x - 5) + 'px';
@@ -378,27 +486,32 @@
     clearTimeout(placeTimer);
     placeTimer = 0;
     if (shownWord == null) return;
-    const list = sections();
     let place = null;
     if (list.length && window.scrollY > 0) {
-      const s = list[currentIndex(list)];
+      const s = list[currentIndex()];
       place = { dict: s.dataset.id, offset: Math.round(window.scrollY - s.offsetTop) };
     }
     native({ type: 'place', word: shownWord, place });
   }
+  // What follows the reading position, once a frame however fast the page scrolls.
+  let scrolled = 0;
   window.addEventListener('scroll', () => {
     clearTimeout(placeTimer);
     placeTimer = setTimeout(reportPlace, 150);
-    const list = sections();
-    followReading(list);
-    pin(list);
+    if (!scrolled) scrolled = requestAnimationFrame(afterScroll);
   }, { passive: true });
+  function afterScroll() {
+    scrolled = 0;
+    const i = currentIndex();
+    pin(list[i]);
+    if (index.open) followReading();
+    reportCurrent(i);
+  }
 
-  // Without room for the list, the name of the entry being read stays pinned at the top
-  // (app.css); text passing under it fades.
+  // The name of the entry being read stays pinned at the top (app.css); text passing
+  // under it fades.
   let pinned = null;
-  function pin(list) {
-    const s = list.length ? list[currentIndex(list)] : null;
+  function pin(s) {
     const p = s && s.firstChild.getBoundingClientRect().top <= 0.5 ? s : null;
     if (p === pinned) return;
     if (pinned) pinned.classList.remove('pinned');
@@ -406,7 +519,7 @@
     pinned = p;
   }
 
-  function currentIndex(list) {
+  function currentIndex() {
     const y = window.scrollY + TOP + 8;
     let i = 0;
     for (let k = 0; k < list.length; k++) if (list[k].offsetTop <= y) i = k;
@@ -414,23 +527,22 @@
   }
 
   function jump(dir) {
-    const list = sections();
     if (!list.length) return;
     let i;
     if (jumpTarget && performance.now() < jumpUntil && list.includes(jumpTarget)) {
-      // A jump is still animating: step from where it is going, not where it is.
+      // A jump is still settling (a glide, frames growing): step from where it is going.
       i = list.indexOf(jumpTarget) + dir;
     } else {
-      i = currentIndex(list);
+      i = currentIndex();
       const above = window.scrollY > list[i].offsetTop - TOP + 8;
       i = dir > 0 ? i + 1 : (above ? i : i - 1);
     }
     i = Math.max(0, Math.min(list.length - 1, i));
     jumpTarget = list[i];
     jumpOffset = 0;
-    jumpSmooth = true;
+    jumpGlides = false;
     jumpUntil = performance.now() + 900;
-    window.scrollTo({ top: jumpTop(list), behavior: 'smooth' });
+    window.scrollTo(0, jumpTop());
   }
 
   // WebKit has no scroll anchoring: when a frame above the reading position grows
@@ -440,8 +552,7 @@
     if (iframe.style.height === px) return;
     if (jumpTarget && performance.now() < jumpUntil) {
       iframe.style.height = px;
-      const list = sections();
-      if (list.includes(jumpTarget)) window.scrollTo({ top: jumpTop(list), behavior: jumpOffset || !jumpSmooth ? 'auto' : 'smooth' });
+      if (list.includes(jumpTarget)) window.scrollTo({ top: jumpTop(), behavior: jumpGlides ? glide() : 'auto' });
       return;
     }
     const y = window.scrollY;
@@ -457,39 +568,35 @@
   }
 
   function pronounce() {
-    for (const s of sections()) {
-      if (s.classList.contains('collapsed')) continue;
-      for (const f of frames.values()) {
-        if (f.section === s && f.sound) {
-          native({ type: 'sound', dict: f.id, path: f.sound });
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  function page(dir) {
-    window.scrollBy({ top: dir * (window.innerHeight * 0.85), behavior: 'smooth' });
+    const f = records().find((f) => visible(f) && f.sound);
+    if (f) native({ type: 'sound', dict: f.id, path: f.sound });
+    return !!f;
   }
 
   function clear() {
+    if (placeTimer) reportPlace();
     indexClose('stay', true); // the list was for the page being replaced
     generation++;
     frames.clear();
     shownWord = null;
     find.cur = null;
+    clearTimeout(find.timer);
     via.hidden = true;
+    dropGhost();
     col.replaceChildren();
+    col.classList.remove('loading');
+    col._pending = null;
+    list = [];
+    pinned = null;
+    cancelHold();
     indexBuild([]);
+    reportCurrent();
   }
 
-  // ---------- the dictionaries in the margin ----------
-  // Every dictionary on the page, listed in the margin when there are two or more and
-  // the window has a margin. The one being read is marked; a click goes to any of them.
-  // ⌘J puts the keyboard on the same list (a contents page over the article when the
-  // window is too narrow for a margin): typing narrows it by name, initials included
-  // ("ldoce"), and the page follows the selection. Leaving it: 'pick' (Return) shows
+  // ---------- go to a dictionary (⌘J) ----------
+  // Every dictionary on the page, as a contents page over the article. The one being
+  // read is selected; a click goes to any of them. Typing narrows it by name, initials
+  // included ("ldoce"), and the page follows the selection. Leaving it: 'pick' (Return) shows
   // the dictionary if it was hidden; 'stay' keeps the place; 'back' returns to where it was.
   const index = { open: false, q: '', sel: -1, rows: [], back: 0 };
 
@@ -572,6 +679,7 @@
   function indexRow(s) {
     const h = s._hit;
     const row = el('div', 'row');
+    row.id = 'ix' + index.rows.length;
     row.setAttribute('role', 'option');
     row.title = h.name;
     if (s.classList.contains('collapsed')) row.classList.add('hid');
@@ -595,11 +703,11 @@
 
   function indexBuild(list) {
     index.sel = -1;
-    index.rows = list.map(indexRow);
+    index.rows = [];
+    for (const s of list) index.rows.push(indexRow(s));
     ix.replaceChildren(...index.rows.map((r) => r.el));
     ix.classList.toggle('icons', list.some((s) => s._hit.icon));
     ix.scrollTop = 0;
-    document.body.classList.toggle('contents', list.length > 1);
     followReading();
   }
 
@@ -608,9 +716,9 @@
     if (s.classList.contains('collapsed')) toggle(s, s._hit);
     jumpTarget = s;
     jumpOffset = 0;
-    jumpSmooth = true;
+    jumpGlides = true;
     jumpUntil = performance.now() + 900;
-    window.scrollTo({ top: Math.max(0, jumpTop(sections())), behavior: 'smooth' });
+    window.scrollTo({ top: Math.max(0, jumpTop()), behavior: glide() });
     followReading();
   }
 
@@ -624,7 +732,6 @@
     followReading();
     const r = index.rows[index.sel];
     if (r) keepInView(r.el);
-    edges();
     indexReport();
   }
 
@@ -644,7 +751,7 @@
     // Nothing by that name: nothing is selected, and the page is back where it was.
     if (index.q && best < 0) {
       setSel(-1, false);
-      jumpTarget = null;
+      cancelHold();
       window.scrollTo(0, index.back);
       return;
     }
@@ -674,42 +781,40 @@
     if (r) {
       r.el.classList.add('sel');
       r.el.setAttribute('aria-selected', 'true');
+      ix.setAttribute('aria-activedescendant', r.el.id);
       keepInView(r.el);
       if (follow) {
         jumpTarget = r.section;
         jumpOffset = 0;
-        jumpSmooth = false;
+        jumpGlides = false;
         jumpUntil = performance.now() + 900;
-        window.scrollTo(0, Math.max(0, jumpTop(sections())));
+        window.scrollTo(0, Math.max(0, jumpTop()));
       }
+    } else {
+      ix.removeAttribute('aria-activedescendant');
     }
     if (index.open) indexReport();
+    reportCurrent();
   }
 
   // The list says where you are: the entry at the top, or the one a jump is going to.
   // Typing that matches nothing leaves nothing marked.
-  function followReading(list = sections()) {
+  function followReading() {
     if (!index.rows.length || (index.q && !index.rows.some((r) => r.score))) return;
     const i = jumpTarget && performance.now() < jumpUntil && list.includes(jumpTarget)
-      ? list.indexOf(jumpTarget) : currentIndex(list);
+      ? list.indexOf(jumpTarget) : currentIndex();
     if (i !== index.sel) setSel(i, false);
   }
 
-  // The list scrolls on its own when it is taller than the window.
-  const FADE = 26;
+  // The list scrolls on its own when it is taller than the window, keeping a row's
+  // worth of room around the selection.
+  const ROOM = 26;
   function keepInView(row) {
     const top = row.offsetTop;
     const bottom = top + row.offsetHeight;
-    if (top - FADE < ix.scrollTop) ix.scrollTop = Math.max(0, top - FADE);
-    else if (bottom + FADE > ix.scrollTop + ix.clientHeight) ix.scrollTop = bottom + FADE - ix.clientHeight;
-    edges();
+    if (top - ROOM < ix.scrollTop) ix.scrollTop = Math.max(0, top - ROOM);
+    else if (bottom + ROOM > ix.scrollTop + ix.clientHeight) ix.scrollTop = bottom + ROOM - ix.clientHeight;
   }
-  function edges() {
-    ix.classList.toggle('above', ix.scrollTop > 1);
-    ix.classList.toggle('below', ix.scrollTop + ix.clientHeight < ix.scrollHeight - 1);
-  }
-  ix.addEventListener('scroll', edges, { passive: true });
-  window.addEventListener('resize', edges);
   // A press anywhere but on a name closes the list, as outside a popover.
   document.addEventListener('mousedown', (e) => {
     if (e.button === 0 && index.open && !e.target.closest('#index .row')) indexClose('stay', true);
@@ -728,13 +833,13 @@
     }
     const r = index.rows[index.sel];
     if (how === 'back') {
-      jumpTarget = null;
+      cancelHold();
       window.scrollTo(0, index.back);
     } else if (how === 'pick' && r && r.section.classList.contains('collapsed')) {
       toggle(r.section, r.section._hit);
     }
     followReading();
-    edges();
+    reportCurrent();
     if (tell) native({ type: 'index', open: false });
   }
 
@@ -750,11 +855,11 @@
     });
   }
 
-  // Dictionaries' icons, beside their names here and in the margin (a setting: some have none).
+  // Dictionaries' icons, beside their names here and in ⌘J's list (a setting: some have none).
   function icons(on) { document.documentElement.classList.toggle('noicons', !on); }
 
   window.sg = {
-    icons, show, jump, pronounce, page, clear, find: findIn, findStep, prepareFind,
+    icons, show, jump, pronounce, clear, find: findIn, findStep, prepareFind, hideCurrent, cancelHold,
     indexOpen, indexQuery, indexMove, indexClose: (how) => indexClose(how, false),
   };
   native({ type: 'loaded' });

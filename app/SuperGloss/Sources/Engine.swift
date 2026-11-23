@@ -1,7 +1,8 @@
 import Foundation
+import OSLog
 
-/// Thin, thread-safe wrapper over the Rust core. Every call is synchronous and
-/// cheap enough for interactive use, but callers run them off the main actor.
+/// Thin, thread-safe wrapper over the Rust core. Every call is synchronous; the ones that
+/// can take a while (suggest, lookup, serving) are made off the main actor.
 final class Engine: @unchecked Sendable {
     private let lib: OpaquePointer
 
@@ -23,8 +24,16 @@ final class Engine: @unchecked Sendable {
 
     private func decode<T: Decodable>(_ type: T.Type, _ p: UnsafeMutablePointer<CChar>?) -> T? {
         guard let s = take(p) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: Data(s.utf8))
+        do {
+            return try JSONDecoder().decode(T.self, from: Data(s.utf8))
+        } catch {
+            // The core and the app disagree about a shape: say so rather than show nothing.
+            Self.log.fault("Couldn't read the core's \(String(describing: T.self), privacy: .public): \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
+
+    private static let log = Logger(subsystem: "app.supergloss", category: "engine")
 
     func configure(roots: [String], order: [String], disabled: [String]) {
         let cfg: [String: [String]] = ["roots": roots, "order": order, "disabled": disabled]

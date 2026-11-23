@@ -12,7 +12,7 @@ struct ShortcutsView: View {
                 ShortcutRow("Previous or next related word", keys: ["⌥", "↑"], or: ["⌥", "↓"])
                 ShortcutRow("Go to the search line", keys: ["⌘", "L"])
                 ShortcutRow("Clear the search, or hide when empty", keys: ["Esc"])
-                ShortcutRow("Look up a word in an entry", gesture: "Double-click")
+                ShortcutRow("Look up a word in an entry", gesture: "Double-click or right-click")
             }
             Section("Find in the entries") {
                 ShortcutRow("Find", keys: ["⌘", "F"])
@@ -21,19 +21,26 @@ struct ShortcutsView: View {
                 ShortcutRow("Done", keys: ["Esc"])
             }
             Section("Read") {
-                ShortcutRow("Next dictionary", keys: ["↓"], or: ["⌥", "⌘", "↓"])
-                ShortcutRow("Previous dictionary", keys: ["↑"], or: ["⌥", "⌘", "↑"])
-                ShortcutRow("Go to a dictionary", keys: ["⌘", "J"])
+                ShortcutRow("Scroll", keys: ["↓"], or: ["↑"])
                 ShortcutRow("Scroll a page", keys: ["Page Down"], or: ["Page Up"])
+                ShortcutRow("To the top or the bottom", keys: ["⌘", "↑"], or: ["⌘", "↓"])
+                ShortcutRow("Next dictionary", keys: ["⌥", "⌘", "↓"])
+                ShortcutRow("Previous dictionary", keys: ["⌥", "⌘", "↑"])
+                ShortcutRow("Go to a dictionary", keys: ["⌘", "J"])
                 ShortcutRow("Pronounce", keys: ["⌘", "P"])
                 ShortcutRow("Save the word, or remove it", keys: ["⌘", "D"])
-                ShortcutRow("Hide or show a dictionary's entry", gesture: "Click its name")
+                ShortcutRow("Hide the dictionary you're reading", keys: ["⌥", "⌘", "←"])
+                ShortcutRow("Show it again", keys: ["⌥", "⌘", "→"])
+                ShortcutRow("Hide or show any dictionary", gesture: "Click its name")
             }
             Section("Go") {
                 ShortcutRow("Back", keys: ["⌘", "["])
                 ShortcutRow("Forward", keys: ["⌘", "]"])
+                ShortcutRow("Back or forward with a mouse", gesture: "Its side buttons")
+                ShortcutRow("Home: saved and recent words", keys: ["⇧", "⌘", "H"])
                 ShortcutRow("Surprise me", keys: ["⌘", "R"])
                 ShortcutRow("Step through saved and recent words on the home page", keys: ["↓"], or: ["↑"])
+                ShortcutRow("Save or remove the word you're on there", keys: ["⌘", "D"])
             }
             Section("Text size") {
                 ShortcutRow("Bigger", keys: ["⌘", "+"])

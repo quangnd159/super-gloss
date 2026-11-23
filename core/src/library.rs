@@ -2,15 +2,19 @@
 
 use crate::fold::{self, split_key};
 use crate::formats::{self, BuildCtx, DictInfo, Kind, Reader};
-use crate::index::{glob_match, Group, Index};
+use crate::index::{AnyLev, Glob, Group, Index, UntilSep};
 use crate::morph;
 use crate::util::{html_escape, html_escape_into, mime_for};
 use anyhow::{bail, Context, Result};
+use fst::Streamer;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::hash_map::Entry;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::UNIX_EPOCH;
 
 /// Bump whenever the on-disk index layout or any format's build output changes.
@@ -75,6 +79,54 @@ fn fnv64(s: &str) -> u64 {
 
 pub fn dict_id(path: &Path) -> String {
     format!("d{:016x}", fnv64(&path.to_string_lossy()))
+}
+
+/// Build folders are named `<id>.tmp-<pid>-<nanos>` beside the indexes they replace.
+const BUILD_MARK: &str = ".tmp-";
+
+/// A build folder, removed however its build ends: an error, a panic, or a swap that left
+/// the previous index in it.
+struct BuildDir(PathBuf);
+
+impl Drop for BuildDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Puts the index built in `tmp` at `dir` in one step: synced to disk first, so a crash
+/// leaves one index or the other whole, then swapped with any previous index.
+fn install(tmp: &Path, dir: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    for e in std::fs::read_dir(tmp)? {
+        File::open(e?.path())?.sync_all()?;
+    }
+    File::open(tmp)?.sync_all()?;
+    let from = std::ffi::CString::new(tmp.as_os_str().as_bytes())?;
+    let to = std::ffi::CString::new(dir.as_os_str().as_bytes())?;
+    // SAFETY: both are NUL-terminated paths that outlive the call.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) } != 0 {
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
+        std::fs::rename(tmp, dir)?;
+    }
+    File::open(dir.parent().context("no cache folder")?)?.sync_all()?;
+    Ok(())
+}
+
+/// Removes build folders whose process has gone: it quit or crashed mid-build.
+fn sweep_builds(cache_root: &Path) {
+    let Ok(rd) = std::fs::read_dir(cache_root) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let pid = name.to_str().and_then(|n| n.split_once(BUILD_MARK)).and_then(|(_, rest)| rest.split('-').next()?.parse().ok());
+        // SAFETY: signal 0 delivers nothing; it only asks whether the process exists.
+        if pid.is_some_and(|pid| unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 fn stat(p: &Path) -> Option<(String, u64, i64)> {
@@ -153,9 +205,58 @@ pub struct Library {
     disabled: RwLock<HashSet<String>>,
     generation: AtomicU64,
     workers: AtomicUsize,
-    claim: Mutex<()>,
+    /// Ids being indexed. Claims go through it, so one id never builds twice at once, even
+    /// when a reconfigure has replaced its `Dict` mid-build.
+    building: Mutex<HashSet<String>>,
     seed: AtomicU64,
     surprise: Mutex<Surprise>,
+    short: RwLock<Arc<ShortTable>>,
+    short_building: AtomicBool,
+}
+
+/// Keys kept per prefix in the short-prefix table: more than any suggestion list shows.
+const SHORT_TOP: usize = 128;
+
+/// For each one- and two-character folded prefix, the keys the most enabled dictionaries
+/// list (then the shortest), best first. A dictionary's alphabetical window can't reach far
+/// into a short prefix ("b" ends in "ba…", never meeting "be", "by" or "but"), so short
+/// queries take their candidates from here.
+#[derive(Default)]
+struct ShortTable {
+    /// The enabled, ready dictionaries it counts, in order.
+    ids: Vec<String>,
+    top: HashMap<String, Vec<Vec<u8>>>,
+}
+
+fn short_table(dicts: &[(Arc<Dict>, Arc<Loaded>)]) -> HashMap<String, Vec<Vec<u8>>> {
+    let mut union = fst::map::OpBuilder::new();
+    for (_, l) in dicts {
+        union.push(l.index.keys());
+    }
+    let mut union = union.union();
+    // The worst kept on top: fewest dictionaries, then longest.
+    type Kept = BinaryHeap<(Reverse<usize>, usize, Vec<u8>)>;
+    // Keyed by the prefix's bytes (two characters fit in eight), so no key allocates.
+    let mut heaps: HashMap<[u8; 8], (String, Kept)> = HashMap::new();
+    while let Some((k, found)) = union.next() {
+        let (folded, ident) = split_key(k);
+        let Ok(folded) = std::str::from_utf8(folded) else { continue };
+        let rank = (Reverse(found.len()), std::str::from_utf8(ident).map_or(ident.len(), |s| s.chars().count()));
+        for (i, c) in folded.char_indices().take(2) {
+            let prefix = &folded[..i + c.len_utf8()];
+            let mut id = [0u8; 8];
+            id[..prefix.len()].copy_from_slice(prefix.as_bytes());
+            let (_, heap) = heaps.entry(id).or_insert_with(|| (prefix.to_string(), BinaryHeap::new()));
+            // Keys arrive in order, so one that only ties the worst kept can't displace it.
+            if heap.len() < SHORT_TOP {
+                heap.push((rank.0, rank.1, k.to_vec()));
+            } else if heap.peek().is_some_and(|w| (w.0, w.1) > rank) {
+                heap.pop();
+                heap.push((rank.0, rank.1, k.to_vec()));
+            }
+        }
+    }
+    heaps.into_values().map(|(p, h)| (p, h.into_sorted_vec().into_iter().map(|(_, _, k)| k).collect())).collect()
 }
 
 /// Uniform draws that learn a library's spread curve.
@@ -248,10 +349,13 @@ fn word_shaped(w: &str) -> bool {
 
 const MAX_WORKERS: usize = 3;
 
+const READ_PANIC: &str = "internal error while reading this dictionary";
+
 impl Library {
     pub fn new(cache_root: impl Into<PathBuf>) -> Arc<Library> {
         let cache_root = cache_root.into();
         let _ = std::fs::create_dir_all(&cache_root);
+        sweep_builds(&cache_root);
         let seed = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1;
         Arc::new(Library {
             cache_root,
@@ -259,9 +363,11 @@ impl Library {
             disabled: RwLock::new(HashSet::new()),
             generation: AtomicU64::new(1),
             workers: AtomicUsize::new(0),
-            claim: Mutex::new(()),
+            building: Mutex::new(HashSet::new()),
             seed: AtomicU64::new(seed),
             surprise: Mutex::new(Surprise::default()),
+            short: RwLock::new(Arc::default()),
+            short_building: AtomicBool::new(false),
         })
     }
 
@@ -380,19 +486,57 @@ impl Library {
             }
             if self.workers.compare_exchange(cur, cur + 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
                 let me = self.clone();
-                std::thread::Builder::new()
-                    .name("sg-index".into())
-                    .spawn(move || {
-                        me.worker();
-                        me.workers.fetch_sub(1, Ordering::SeqCst);
-                    })
-                    .ok();
+                let spawned = std::thread::Builder::new().name("sg-index".into()).spawn(move || {
+                    me.worker();
+                    let last = me.workers.fetch_sub(1, Ordering::SeqCst) == 1;
+                    me.refresh_short();
+                    if last {
+                        for (_, l) in me.enabled_ready() {
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| l.reader.warm()));
+                        }
+                    }
+                });
+                if spawned.is_err() {
+                    self.workers.fetch_sub(1, Ordering::SeqCst);
+                    break;
+                }
             }
         }
     }
 
-    fn cache_valid(&self, d: &Dict) -> bool {
-        self.read_meta(d).is_some()
+    /// Rebuilds the short-prefix table in the background when it no longer counts the
+    /// enabled, ready dictionaries. Waits for indexing to finish, not to rebuild per arrival.
+    fn refresh_short(self: &Arc<Self>) {
+        let indexing = self.dicts.read().unwrap().iter().any(|d| matches!(d.state(), State::Pending | State::Indexing));
+        if indexing || self.short_building.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let me = self.clone();
+        let spawned = std::thread::Builder::new().name("sg-short".into()).spawn(move || {
+            let dicts = me.enabled_ready();
+            let ids: Vec<String> = dicts.iter().map(|(d, _)| d.id.clone()).collect();
+            if me.short.read().unwrap().ids != ids {
+                // A map damaged past its checks panics here; the table is then left empty,
+                // which keeps suggestions on the per-dictionary windows.
+                let top = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| short_table(&dicts))).unwrap_or_default();
+                *me.short.write().unwrap() = Arc::new(ShortTable { ids, top });
+                me.bump();
+            }
+            me.short_building.store(false, Ordering::SeqCst);
+        });
+        if spawned.is_err() {
+            self.short_building.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// The short-prefix table, when it counts exactly `dicts`.
+    fn short_for(self: &Arc<Self>, dicts: &[(Arc<Dict>, Arc<Loaded>)]) -> Option<Arc<ShortTable>> {
+        let t = self.short.read().unwrap().clone();
+        if !t.ids.iter().eq(dicts.iter().map(|(d, _)| &d.id)) {
+            self.refresh_short();
+            return None;
+        }
+        (!t.top.is_empty()).then_some(t)
     }
 
     fn read_meta(&self, d: &Dict) -> Option<Meta> {
@@ -403,11 +547,13 @@ impl Library {
 
     /// Claims the next pending dictionary: cached ones first, then smallest first.
     fn claim_next(&self) -> Option<Arc<Dict>> {
-        let _g = self.claim.lock().unwrap();
+        let mut building = self.building.lock().unwrap();
         let dicts = self.dicts.read().unwrap();
-        let mut pending: Vec<&Arc<Dict>> = dicts.iter().filter(|d| matches!(d.state(), State::Pending)).collect();
-        pending.sort_by_key(|d| (!self.cache_valid(d), d.size));
+        let mut pending: Vec<&Arc<Dict>> =
+            dicts.iter().filter(|d| matches!(d.state(), State::Pending) && !building.contains(&d.id)).collect();
+        pending.sort_by_cached_key(|d| (self.read_meta(d).is_none(), d.size));
         let d = pending.first().cloned()?.clone();
+        building.insert(d.id.clone());
         *d.state.write().unwrap() = State::Indexing;
         Some(d)
     }
@@ -422,6 +568,7 @@ impl Library {
                 Err(_) => State::Failed("internal error while indexing".into()),
             };
             *d.state.write().unwrap() = st;
+            self.building.lock().unwrap().remove(&d.id);
             self.bump();
         }
     }
@@ -433,30 +580,21 @@ impl Library {
                 return Ok(l);
             }
         }
-        let tmp = self.cache_root.join(format!(
-            "{}.tmp-{}-{}",
+        let tmp = BuildDir(self.cache_root.join(format!(
+            "{}{BUILD_MARK}{}-{}",
             d.id,
             std::process::id(),
             std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|x| x.as_nanos()).unwrap_or(0)
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp)?;
+        )));
+        std::fs::create_dir_all(&tmp.0)?;
         let progress = |p: f32| {
             d.progress.store(p.to_bits(), Ordering::Relaxed);
             self.bump();
         };
-        let built = formats::build(d.kind, &d.path, &BuildCtx { dir: &tmp, progress: &progress });
-        let info = match built {
-            Ok(i) => i,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&tmp);
-                return Err(e);
-            }
-        };
+        let info = formats::build(d.kind, &d.path, &BuildCtx { dir: &tmp.0, progress: &progress })?;
         let meta = Meta { version: INDEX_VERSION, revision: d.kind.revision(), fingerprint: d.fingerprint.clone(), info };
-        std::fs::write(tmp.join("meta.json"), serde_json::to_vec(&meta)?)?;
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::rename(&tmp, &dir).context("install index")?;
+        std::fs::write(tmp.0.join("meta.json"), serde_json::to_vec(&meta)?)?;
+        install(&tmp.0, &dir).context("install index")?;
         self.open_loaded(d, &dir, meta.info)
     }
 
@@ -537,7 +675,18 @@ impl Library {
 
     // ---------------------------------------------------------------- search
 
-    pub fn suggest(&self, query: &str, limit: usize) -> Vec<Suggestion> {
+    /// Runs one dictionary's share of a request. A panic there (a file or cache damaged in
+    /// a way the checks missed) fails that dictionary alone instead of the whole request.
+    fn guarded<T>(&self, d: &Dict, f: impl FnOnce() -> T) -> Option<T> {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        if r.is_err() {
+            *d.state.write().unwrap() = State::Failed(READ_PANIC.into());
+            self.bump();
+        }
+        r.ok()
+    }
+
+    pub fn suggest(self: &Arc<Self>, query: &str, limit: usize) -> Vec<Suggestion> {
         let q = query.trim();
         if q.is_empty() || limit == 0 {
             return Vec::new();
@@ -552,48 +701,85 @@ impl Library {
             return Vec::new();
         }
         let diacritics = fq != lq;
-        // Gather a generous alphabetical window per dictionary, then rank globally.
-        let window = (limit * 6).max(240);
-        let mut merged: HashMap<Vec<u8>, (String, usize, u32)> = HashMap::new();
-        for (prio, (_, l)) in dicts.iter().enumerate() {
-            for g in l.index.prefix(fq.as_bytes(), window) {
-                merge(&mut merged, &l.index, &g, prio, q);
+        let mut merged: HashMap<Vec<u8>, (String, u32)> = HashMap::new();
+        let short = (fq.chars().count() <= 2 && !diacritics && limit <= SHORT_TOP).then(|| self.short_for(&dicts)).flatten();
+        if let Some(t) = &short {
+            let top = t.top.get(&fq).map_or(&[][..], Vec::as_slice);
+            let exact = (!top.iter().any(|k| k == fq.as_bytes())).then_some(fq.as_bytes());
+            for (d, l) in &dicts {
+                self.guarded(d, || {
+                    for k in top.iter().map(Vec::as_slice).chain(exact) {
+                        if let Some(g) = l.index.get(k) {
+                            merge(&mut merged, &l.index, g, q);
+                        }
+                    }
+                });
+            }
+        } else {
+            // Gather a generous alphabetical window per dictionary, then rank globally.
+            let window = (limit * 6).max(240);
+            // Past the end of the shortest full window, other dictionaries' counts are
+            // incomplete, and a word's spread would rank it wrongly.
+            let mut cut: Option<Vec<u8>> = None;
+            for (d, l) in &dicts {
+                self.guarded(d, || {
+                    let groups = l.index.prefix(fq.as_bytes(), window);
+                    if groups.len() == window {
+                        let last = &groups[window - 1].key;
+                        if cut.as_ref().is_none_or(|c| last < c) {
+                            cut = Some(last.clone());
+                        }
+                    }
+                    for g in groups {
+                        merge(&mut merged, &l.index, g, q);
+                    }
+                });
+            }
+            if let Some(cut) = cut {
+                merged.retain(|k, _| *k <= cut);
             }
         }
         // rank: 0 exact, 1 base form, 2 spelled-as-typed prefix, 3 other prefix
-        let mut out: Vec<(u8, Vec<u8>, Suggestion)> = merged
+        let mut out: Vec<Ranked> = merged
             .into_iter()
-            .map(|(k, (w, _, c))| {
-                let (_, ident) = split_key(&k);
-                let r = if ident == lq.as_bytes() {
+            .map(|(key, (word, sources))| {
+                let ident = split_key(&key).1;
+                let rank = if ident == lq.as_bytes() {
                     0
                 } else if diacritics && !ident.starts_with(lq.as_bytes()) {
                     3
                 } else {
                     2
                 };
-                (r, k, Suggestion { word: w, kind: if r == 0 { "exact" } else { "prefix" }, sources: c })
+                let kind = if rank == 0 { "exact" } else { "prefix" };
+                Ranked { rank, len: word.chars().count(), key, s: Suggestion { word, kind, sources } }
             })
             .collect();
 
         // Numbered entry keys ("above_1") are link targets, not words, when the word itself is listed.
-        let listed: HashSet<String> = out.iter().map(|(_, _, s)| fold::lower(&s.word)).collect();
-        out.retain(|(_, _, s)| numbered_base(&s.word).is_none_or(|b| !listed.contains(&fold::lower(b))));
+        let listed: HashSet<&[u8]> = out.iter().map(|r| split_key(&r.key).1).collect();
+        let links: Vec<usize> = (0..out.len())
+            .filter(|&i| numbered_base(&out[i].s.word).is_some_and(|b| listed.contains(fold::lower(b).as_bytes())))
+            .collect();
+        drop(listed);
+        for i in links.into_iter().rev() {
+            out.swap_remove(i);
+        }
 
         // Base forms of inflected input ("running" → "run").
-        let has_exact = out.iter().any(|(r, _, _)| *r == 0);
+        let has_exact = out.iter().any(|r| r.rank == 0);
         for lemma in morph::english_lemmas(&lq) {
-            if let Some(e) = out.iter_mut().find(|(_, _, s)| fold::lower(&s.word) == lemma) {
-                e.0 = 1;
-                e.2.kind = "lemma";
+            if let Some(r) = out.iter_mut().find(|r| split_key(&r.key).1 == lemma.as_bytes()) {
+                r.rank = 1;
+                r.s.kind = "lemma";
                 if has_exact {
                     break;
                 }
                 continue;
             }
-            if let Some((w, c)) = self.exact_word(&dicts, &lemma) {
-                let k = fold::index_key(&w).unwrap_or_default();
-                out.push((1, k, Suggestion { word: w, kind: "lemma", sources: c }));
+            if let Some((word, sources)) = self.exact_word(&dicts, &lemma) {
+                let key = fold::index_key(&word).unwrap_or_default();
+                out.push(Ranked { rank: 1, len: word.chars().count(), key, s: Suggestion { word, kind: "lemma", sources } });
                 if has_exact {
                     break;
                 }
@@ -601,84 +787,110 @@ impl Library {
         }
         // Within a rank: words found in more dictionaries (≈ more common) first,
         // then shorter, then alphabetical.
-        out.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then(b.2.sources.cmp(&a.2.sources))
-                .then(a.2.word.chars().count().cmp(&b.2.word.chars().count()))
-                .then(a.1.cmp(&b.1))
+        out.sort_unstable_by(|a, b| {
+            a.rank.cmp(&b.rank).then(b.s.sources.cmp(&a.s.sources)).then(a.len.cmp(&b.len)).then_with(|| a.key.cmp(&b.key))
         });
-        let mut out: Vec<Suggestion> = out.into_iter().map(|(_, _, s)| s).take(limit).collect();
+        let mut out: Vec<(Vec<u8>, Suggestion)> = out.into_iter().take(limit).map(|r| (r.key, r.s)).collect();
 
         // Typo tolerance when nothing matches as typed.
         if !has_exact && out.len() < 4 && fq.chars().count() >= 3 {
-            let n = fq.chars().count();
-            let dist = if n <= 5 { 1 } else { 2 };
-            if let Ok(lev) = fst::automaton::Levenshtein::new(&fq, dist) {
-                let mut fz: HashMap<Vec<u8>, (String, usize, u32)> = HashMap::new();
-                for (prio, (_, l)) in dicts.iter().enumerate() {
-                    for g in l.index.search_folded(crate::index::UntilSep(&lev), 64) {
-                        merge(&mut fz, &l.index, &g, prio, q);
-                    }
+            for (key, word, sources) in self.typos(&dicts, &fq, q) {
+                if out.len() >= limit {
+                    break;
                 }
-                let mut fzv: Vec<(usize, Vec<u8>, String, u32)> = fz
-                    .into_iter()
-                    .map(|(k, (w, _, c))| {
-                        let (f, _) = split_key(&k);
-                        (osa_distance(&fq, std::str::from_utf8(f).unwrap_or("")), k, w, c)
-                    })
-                    .collect();
-                fzv.sort_by(|a, b| a.0.cmp(&b.0).then(b.3.cmp(&a.3)).then(a.1.cmp(&b.1)));
-                for (_, _, w, c) in fzv {
-                    if out.len() >= limit {
-                        break;
-                    }
-                    if !out.iter().any(|s| fold::lower(&s.word) == fold::lower(&w)) {
-                        out.push(Suggestion { word: w, kind: "fuzzy", sources: c });
-                    }
+                if !out.iter().any(|(k, _)| *k == key) {
+                    out.push((key, Suggestion { word, kind: "fuzzy", sources }));
                 }
             }
         }
-        out
+        out.into_iter().map(|(_, s)| s).collect()
+    }
+
+    /// Spellings near `fq`, closest first. A swap of neighbours counts as one edit
+    /// ("wierd" → "weird"), which the Levenshtein automaton alone would count as two.
+    fn typos(&self, dicts: &[(Arc<Dict>, Arc<Loaded>)], fq: &str, q: &str) -> Vec<(Vec<u8>, String, u32)> {
+        /// Candidates kept per dictionary, after sorting by distance.
+        const PER_DICT: usize = 64;
+        let chars: Vec<char> = fq.chars().collect();
+        let dist = if chars.len() <= 5 { 1 } else { 2 };
+        let Ok(lev) = fst::automaton::Levenshtein::new(fq, dist) else { return Vec::new() };
+        let swaps: Vec<String> = (1..chars.len())
+            .filter(|&i| chars[i - 1] != chars[i])
+            .map(|i| {
+                let mut c = chars.clone();
+                c.swap(i - 1, i);
+                c.into_iter().collect()
+            })
+            .collect();
+        let scored = |groups: Vec<Group>| groups.into_iter().map(|g| (folded_distance(fq, &g.key), g));
+        let mut near: Vec<Vec<(usize, Group)>> = dicts
+            .iter()
+            .map(|(d, l)| {
+                self.guarded(d, || {
+                    let mut near: Vec<_> = swaps.iter().flat_map(|s| scored(l.index.folded(s.as_bytes()))).collect();
+                    near.extend(scored(l.index.search_folded(UntilSep(&lev), PER_DICT * 8)));
+                    near
+                })
+                .unwrap_or_default()
+            })
+            .collect();
+        // With two edits allowed, a swap leaves one more: "recieveing" → "receiving". Only
+        // when nothing is a single edit away: it costs more than everything above.
+        if dist > 1 && !near.iter().flatten().any(|(n, _)| *n <= 1) {
+            let near_swaps: Vec<_> = swaps.iter().filter_map(|s| fst::automaton::Levenshtein::new(s, dist - 1).ok()).collect();
+            for ((d, l), near) in dicts.iter().zip(&mut near) {
+                self.guarded(d, || {
+                    for group in near_swaps.chunks(AnyLev::MAX) {
+                        near.extend(scored(l.index.search_folded(UntilSep(AnyLev(group)), PER_DICT * 8)));
+                    }
+                });
+            }
+        }
+        let mut found: HashMap<Vec<u8>, (String, u32)> = HashMap::new();
+        for ((d, l), mut near) in dicts.iter().zip(near) {
+            self.guarded(d, || {
+                near.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
+                near.dedup_by(|a, b| a.1.key == b.1.key);
+                for (_, g) in near.into_iter().take(PER_DICT) {
+                    merge(&mut found, &l.index, g, q);
+                }
+            });
+        }
+        let mut out: Vec<(usize, Vec<u8>, String, u32)> =
+            found.into_iter().map(|(k, (w, c))| (folded_distance(fq, &k), k, w, c)).collect();
+        out.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.3.cmp(&a.3)).then_with(|| a.1.cmp(&b.1)));
+        out.into_iter().map(|(_, k, w, c)| (k, w, c)).collect()
     }
 
     fn exact_word(&self, dicts: &[(Arc<Dict>, Arc<Loaded>)], word: &str) -> Option<(String, u32)> {
         let key = fold::index_key(word)?;
         let mut found: Option<String> = None;
         let mut count = 0;
-        for (_, l) in dicts {
-            if let Some(g) = l.index.get(&key) {
-                count += 1;
-                if found.is_none() {
-                    found = l.index.entry(g.start).map(|(w, _)| w.to_string());
+        for (d, l) in dicts {
+            self.guarded(d, || {
+                if let Some(g) = l.index.get(&key) {
+                    count += 1;
+                    if found.is_none() {
+                        found = l.index.entry(g.start).map(|(w, _)| w.to_string());
+                    }
                 }
-            }
+            });
         }
         found.map(|w| (w, count))
     }
 
     fn glob(&self, dicts: &[(Arc<Dict>, Arc<Loaded>)], q: &str, limit: usize) -> Vec<Suggestion> {
-        let fq = fold::fold(q);
-        let pat: Vec<char> = fq.chars().collect();
-        let lit: String = fq.chars().take_while(|c| *c != '*' && *c != '?').collect();
-        let mut merged: HashMap<Vec<u8>, (String, usize, u32)> = HashMap::new();
-        let mut buf: Vec<char> = Vec::new();
-        for (prio, (_, l)) in dicts.iter().enumerate() {
-            let mut n = 0;
-            let mut scanned = 0usize;
-            l.index.scan_prefix(lit.as_bytes(), |k, g| {
-                scanned += 1;
-                let (f, _) = split_key(k);
-                buf.clear();
-                buf.extend(std::str::from_utf8(f).unwrap_or("").chars());
-                if glob_match(&pat, &buf) {
-                    merge(&mut merged, &l.index, &g, prio, q);
-                    n += 1;
+        let Some(glob) = Glob::new(&fold::fold(q)) else { return Vec::new() };
+        let mut merged: HashMap<Vec<u8>, (String, u32)> = HashMap::new();
+        for (d, l) in dicts {
+            self.guarded(d, || {
+                for g in l.index.search_folded(UntilSep(&glob), limit) {
+                    merge(&mut merged, &l.index, g, q);
                 }
-                n < limit && scanned < 2_000_000
             });
         }
-        let mut v: Vec<(Vec<u8>, String, u32)> = merged.into_iter().map(|(k, (w, _, c))| (k, w, c)).collect();
-        v.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut v: Vec<(Vec<u8>, String, u32)> = merged.into_iter().map(|(k, (w, c))| (k, w, c)).collect();
+        v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         v.into_iter().take(limit).map(|(_, w, c)| Suggestion { word: w, kind: "glob", sources: c }).collect()
     }
 
@@ -687,12 +899,12 @@ impl Library {
     pub fn lookup(&self, word: &str) -> LookupResult {
         let word = word.trim();
         let dicts = self.enabled_ready();
-        let hits = Self::hits_for(&dicts, word);
+        let hits = self.hits_for(&dicts, word);
         if !hits.is_empty() {
             return LookupResult { word: word.to_string(), via: None, hits };
         }
         for lemma in morph::english_lemmas(&fold::lower(word)) {
-            let hits = Self::hits_for(&dicts, &lemma);
+            let hits = self.hits_for(&dicts, &lemma);
             if !hits.is_empty() {
                 return LookupResult { word: word.to_string(), via: Some(lemma), hits };
             }
@@ -700,33 +912,35 @@ impl Library {
         LookupResult { word: word.to_string(), via: None, hits: Vec::new() }
     }
 
-    fn hits_for(dicts: &[(Arc<Dict>, Arc<Loaded>)], word: &str) -> Vec<Hit> {
+    fn hits_for(&self, dicts: &[(Arc<Dict>, Arc<Loaded>)], word: &str) -> Vec<Hit> {
         let Some(key) = fold::index_key(word) else { return Vec::new() };
-        let folded = split_key(&key).0.to_vec();
+        let folded = split_key(&key).0;
         let mut hits = Vec::new();
         for (d, l) in dicts {
-            let groups: Vec<Group> = match l.index.get(&key) {
-                Some(g) => vec![g],
-                None => l.index.folded(&folded),
-            };
-            let mut entries = Vec::new();
-            let mut words = Vec::new();
-            let mut seen = HashSet::new();
-            for g in groups {
-                for i in g.range() {
-                    if let Some((w, loc)) = l.index.entry(i) {
-                        if seen.insert(loc) {
-                            entries.push(i);
-                            if !words.iter().any(|x: &String| x == w) {
-                                words.push(w.to_string());
+            self.guarded(d, || {
+                let groups: Vec<Group> = match l.index.get(&key) {
+                    Some(g) => vec![g],
+                    None => l.index.folded(folded),
+                };
+                let mut entries = Vec::new();
+                let mut words = Vec::new();
+                let mut seen = HashSet::new();
+                for g in groups {
+                    for i in g.range() {
+                        if let Some((w, loc)) = l.index.entry(i) {
+                            if seen.insert(loc) {
+                                entries.push(i);
+                                if !words.iter().any(|x: &String| x == w) {
+                                    words.push(w.to_string());
+                                }
                             }
                         }
                     }
                 }
-            }
-            if !entries.is_empty() {
-                hits.push(Hit { dict: d.id.clone(), name: l.info.name.clone(), entries, words, foreign: l.reader.foreign() });
-            }
+                if !entries.is_empty() {
+                    hits.push(Hit { dict: d.id.clone(), name: l.info.name.clone(), entries, words, foreign: l.reader.foreign() });
+                }
+            });
         }
         hits
     }
@@ -777,7 +991,8 @@ impl Library {
         if total == 0 {
             return None;
         }
-        let mut st = self.surprise.lock().unwrap();
+        // A panic while rendering for `fits` must not lock "Surprise me" for the session.
+        let mut st = self.surprise.lock().unwrap_or_else(PoisonError::into_inner);
         let gen = self.generation();
         if st.gen != gen || st.accept.is_empty() {
             st.accept = self.calibrate(&dicts, total);
@@ -921,30 +1136,40 @@ impl Library {
         let l = d.loaded().context("dictionary not ready")?;
         let foreign = l.reader.foreign();
         let mut body = String::new();
-        for (n, &i) in entries.iter().enumerate() {
-            let Some((w, loc)) = l.index.entry(i) else { continue };
-            let html = match l.reader.article(&l.index, w, loc) {
-                Ok(h) => h,
-                Err(e) => format!("<p class=\"sg-error\">Could not read this entry: {}</p>", html_escape(&format!("{e:#}"))),
-            };
-            if n > 0 {
-                body.push_str("<hr class=\"sg-sep\">");
+        self.guarded(&d, || {
+            for (n, &i) in entries.iter().enumerate() {
+                let Some((w, loc)) = l.index.entry(i) else { continue };
+                let html = match l.reader.article(&l.index, w, loc) {
+                    Ok(h) => h,
+                    Err(e) => format!("<p class=\"sg-error\">Could not read this entry: {}</p>", html_escape(&format!("{e:#}"))),
+                };
+                if n > 0 {
+                    body.push_str("<hr class=\"sg-sep\">");
+                }
+                body.push_str("<article class=\"sg-entry\">");
+                // Every entry opens with its headword. MDict pages are designed around their own;
+                // other formats get one unless their text already starts with it.
+                let head = l.index.headword(i).unwrap_or(w);
+                if d.kind != Kind::Mdict && !starts_with_headword(&html, head) {
+                    body.push_str("<h1 class=\"sg-hw\">");
+                    html_escape_into(&mut body, head);
+                    body.push_str("</h1>");
+                }
+                body.push_str(&html);
+                body.push_str("</article>");
             }
-            body.push_str("<article class=\"sg-entry\">");
-            // Every entry opens with its headword. MDict pages are designed around their own;
-            // other formats get one unless their text already starts with it.
-            let head = l.index.headword(i).unwrap_or(w);
-            if d.kind != Kind::Mdict && !starts_with_headword(&html, head) {
-                body.push_str("<h1 class=\"sg-hw\">");
-                html_escape_into(&mut body, head);
-                body.push_str("</h1>");
-            }
-            body.push_str(&html);
-            body.push_str("</article>");
-        }
+        })
+        .context(READ_PANIC)?;
         let class = if foreign { "sg-foreign" } else { "sg-native" };
+        // Formats without a design of their own never need script, so their text can't run
+        // any. The app's frame.js is a WKUserScript, which a page's policy doesn't reach.
+        let policy = if foreign {
+            ""
+        } else {
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'none'; object-src 'none'\">"
+        };
         Ok(format!(
-            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">{policy}<meta name=\"viewport\" content=\"width=device-width\">\
              <link rel=\"stylesheet\" href=\"sgloss://app/article.css\"></head>\
              <body class=\"{class} fmt-{fmt}\">{body}</body></html>",
             fmt = d.kind.label().to_ascii_lowercase()
@@ -954,7 +1179,7 @@ impl Library {
     pub fn resource(&self, id: &str, path: &str) -> Result<Option<Vec<u8>>> {
         let d = self.dict(id).context("unknown dictionary")?;
         let l = d.loaded().context("dictionary not ready")?;
-        l.reader.resource(path)
+        self.guarded(&d, || l.reader.resource(path)).context(READ_PANIC)?
     }
 
     /// Audio for `sound://` links, transcoded when AVFoundation can't play it.
@@ -1043,26 +1268,44 @@ pub fn link_label(key: &str) -> String {
     }
 }
 
-fn merge(map: &mut HashMap<Vec<u8>, (String, usize, u32)>, index: &Index, g: &Group, prio: usize, q: &str) {
-    let Some((w, _)) = index.entry(g.start) else { return };
-    // Prefer the spelling that matches the query exactly.
-    let exact = (g.start..g.start + g.count).filter_map(|i| index.entry(i)).find(|(x, _)| *x == q).map(|(x, _)| x);
-    match map.get_mut(&g.key) {
-        Some(e) => {
-            e.2 += 1;
-            if let Some(x) = exact {
-                if e.0 != q {
-                    e.0 = x.to_string();
+/// A suggestion with what ranks it.
+struct Ranked {
+    rank: u8,
+    /// Characters in the word.
+    len: usize,
+    key: Vec<u8>,
+    s: Suggestion,
+}
+
+/// Counts one dictionary's `g` toward its key and settles the spelling shown: as typed,
+/// else a lowercase one ("friend" over a dictionary's "Friend"), else the first seen.
+fn merge(map: &mut HashMap<Vec<u8>, (String, u32)>, index: &Index, g: Group, q: &str) {
+    let range = g.range();
+    let words = || range.clone().filter_map(|i| index.entry(i)).map(|(w, _)| w);
+    let lowercase = |w: &str| !w.chars().any(char::is_uppercase);
+    let Some(first) = words().next() else { return };
+    let typed = words().find(|w| *w == q);
+    match map.entry(g.key) {
+        Entry::Occupied(mut e) => {
+            let (shown, sources) = e.get_mut();
+            *sources += 1;
+            if shown != q {
+                let better = typed.or_else(|| if lowercase(shown) { None } else { words().find(|w| lowercase(w)) });
+                if let Some(w) = better {
+                    *shown = w.to_string();
                 }
-            } else if prio < e.1 && e.0 != q {
-                e.0 = w.to_string();
-                e.1 = prio;
             }
         }
-        None => {
-            map.insert(g.key.clone(), (exact.unwrap_or(w).to_string(), prio, 1));
+        Entry::Vacant(e) => {
+            let w = typed.or_else(|| words().find(|w| lowercase(w))).unwrap_or(first);
+            e.insert((w.to_string(), 1));
         }
     }
+}
+
+/// Distance between `fq` and the folded part of `key`.
+fn folded_distance(fq: &str, key: &[u8]) -> usize {
+    osa_distance(fq, std::str::from_utf8(split_key(key).0).unwrap_or(""))
 }
 
 /// Optimal-string-alignment distance (Levenshtein plus adjacent transpositions).
@@ -1258,6 +1501,113 @@ fn about_text(desc: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes a DSL dictionary of `words` into `dir`.
+    fn dsl(dir: &Path, name: &str, words: &[&str]) {
+        let mut s = format!("#NAME \"{name}\"\n\n");
+        for w in words {
+            s.push_str(&format!("{w}\n\t[trn]about {w}[/trn]\n"));
+        }
+        std::fs::write(dir.join(format!("{name}.dsl")), s).unwrap();
+    }
+
+    /// A library over the dictionaries `fill` writes, indexed; returns its folder too.
+    fn library(name: &str, fill: impl Fn(&Path)) -> (Arc<Library>, PathBuf) {
+        let root = std::env::temp_dir().join(format!("sg-lib-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dicts")).unwrap();
+        fill(&root.join("dicts"));
+        (open(&root), root)
+    }
+
+    fn open(root: &Path) -> Arc<Library> {
+        let lib = Library::new(root.join("cache"));
+        lib.configure(&Config { roots: vec![root.join("dicts").to_string_lossy().into_owned()], ..Default::default() });
+        lib.wait_idle();
+        lib
+    }
+
+    fn words(s: &[Suggestion]) -> Vec<&str> {
+        s.iter().map(|s| s.word.as_str()).collect()
+    }
+
+    #[test]
+    fn malformed_mdict_fails_alone() {
+        let (lib, root) = library("evil", |d| {
+            let wrap = crate::formats::mdict::crafted_mdx([0, 0, 0, 0x4000_0000_0000_0000, 0xC000_0000_0000_0000], &[0; 64]);
+            std::fs::write(d.join("evil.mdx"), wrap).unwrap();
+            dsl(d, "good", &["apple"]);
+        });
+        let s = lib.summaries();
+        let evil = s.iter().find(|d| d.path.ends_with("evil.mdx")).unwrap();
+        assert_eq!(evil.state, "failed");
+        assert!(evil.error.as_deref().is_some_and(|e| !e.is_empty()));
+        assert!(s.iter().any(|d| d.name == "good" && d.state == "ready"));
+        assert!(std::fs::read_dir(root.join("cache")).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().contains(BUILD_MARK)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn damaged_index_is_rebuilt() {
+        let (lib, root) = library("damaged", |d| dsl(d, "one", &["apple", "apply", "banana"]));
+        let id = lib.summaries()[0].id.clone();
+        drop(lib);
+        let fst = root.join("cache").join(&id).join("keys.fst");
+        let mut bytes = std::fs::read(&fst).unwrap();
+        for b in &mut bytes[..8] {
+            *b ^= 0xff;
+        }
+        std::fs::write(&fst, bytes).unwrap();
+        let lib = open(&root);
+        assert_eq!(lib.summaries()[0].state, "ready");
+        assert_eq!(words(&lib.suggest("app", 10)), ["apple", "apply"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn short_prefixes_reach_common_words() {
+        // Three hundred rare "ba…" words fill every dictionary's alphabetical window for "b".
+        let rare: Vec<String> = (0..300).map(|i| format!("ba{}{}", (b'a' + (i / 26) as u8) as char, (b'a' + (i % 26) as u8) as char)).collect();
+        let (lib, root) = library("short", |d| {
+            for name in ["one", "two", "three"] {
+                let mut w: Vec<&str> = rare.iter().map(String::as_str).collect();
+                w.extend(["be", "by", "but", "big"]);
+                dsl(d, name, &w);
+            }
+        });
+        for _ in 0..250 {
+            if !lib.short.read().unwrap().top.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let b = lib.suggest("b", 10);
+        for w in ["be", "by", "but", "big"] {
+            assert!(words(&b).contains(&w), "{w} in {:?}", words(&b));
+        }
+        assert_eq!(words(&lib.suggest("bu", 10))[0], "but");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn typos() {
+        let (lib, root) = library("typos", |d| {
+            dsl(d, "one", &["Friend", "weird", "wield", "receiving", "relieving"]);
+            dsl(d, "two", &["friend", "weird"]);
+        });
+        assert!(words(&lib.suggest("wierd", 10)).contains(&"weird"));
+        assert_eq!(words(&lib.suggest("freind", 10))[0], "friend");
+        assert!(words(&lib.suggest("recieveing", 10)).contains(&"receiving"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn script_free_formats_forbid_script() {
+        let (lib, root) = library("csp", |d| dsl(d, "one", &["apple"]));
+        let hit = lib.lookup("apple").hits.remove(0);
+        assert!(lib.article_page(&hit.dict, &hit.entries).unwrap().contains("script-src 'none'"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn surprise_word_shape() {

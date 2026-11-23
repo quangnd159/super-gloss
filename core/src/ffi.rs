@@ -48,13 +48,16 @@ pub unsafe extern "C" fn sg_library_free(p: *mut SGLibrary) {
     }
 }
 
-/// Applies `{"roots":[..],"order":[..],"disabled":[..]}` and starts indexing.
+/// Applies `{"roots":[..],"order":[..],"disabled":[..]}` and starts indexing. Malformed
+/// JSON keeps the current configuration: read as empty, it would remove every dictionary.
 #[no_mangle]
 pub extern "C" fn sg_configure(p: *const SGLibrary, config_json: *const c_char) {
     guard((), || {
         if let Some(l) = lib(p) {
-            let cfg: Config = serde_json::from_str(cstr(config_json)).unwrap_or_default();
-            l.configure(&cfg);
+            match serde_json::from_str::<Config>(cstr(config_json)) {
+                Ok(cfg) => l.configure(&cfg),
+                Err(e) => eprintln!("sg_configure: ignoring malformed config: {e}"),
+            }
         }
     })
 }

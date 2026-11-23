@@ -6,10 +6,13 @@ import SwiftUI
 protocol ArticleController: AnyObject {
     func show(_ result: LookupResult?, dictionaries: [DictSummary], landing: Landing?)
     func jump(_ direction: Int)
-    func page(_ direction: Int)
+    /// Hands a key to the page to scroll by, as if it had focus: WebKit's own keyboard scrolling.
+    func scroll(with key: NSEvent)
     func pronounce()
     func setZoom(_ zoom: Double)
     func setIcons(_ on: Bool)
+    /// Hides (true) or shows the entry the reader is on: ⌘J's selection while the list is open.
+    func hideCurrent(_ hide: Bool)
     func find(_ query: String)
     func findStep(_ direction: Int)
     func prepareFind()
@@ -45,8 +48,16 @@ final class AppModel {
         didSet {
             guard query != oldValue else { return }
             // Back on home from a word opened there: the keyboard is on it again, so ↓ goes on to the next.
+            if !query.isEmpty { keptOnHome = nil }
             homeSelection = query.isEmpty ? homeReturn.flatMap { homeItems.contains($0) ? $0 : nil } : nil
-            if !programmatic { search(show: nil) }
+            if !programmatic {
+                // The reader's own typing outranks anything still on its way: a link being
+                // resolved, a landing, the word a relaunch was going to reopen.
+                linkTask?.cancel()
+                pendingLanding = nil
+                pendingResume = nil
+                search(show: nil)
+            }
         }
     }
     private(set) var suggestions: [Suggestion] = []
@@ -89,7 +100,7 @@ final class AppModel {
     var indexQuery = "" {
         didSet { if indexing && indexQuery != oldValue { article?.indexQuery(indexQuery) } }
     }
-    /// The selected dictionary's name, as the margin shows it.
+    /// The selected dictionary's name, as ⌘J's list shows it.
     private(set) var indexName = ""
     /// How many dictionaries the typing matches, of how many answered the word.
     private(set) var indexMatches = 0
@@ -97,12 +108,19 @@ final class AppModel {
     /// Incremented to ask the line's field to take focus.
     private(set) var indexFocusTick = 0
 
+    /// The entry the reader is on, as the page reports it, for Go › Hide and Show.
+    var current: CurrentEntry?
+
     // MARK: saved words
 
     /// Saved words and link keys, newest first.
     private(set) var saved: [String]
-    /// Incremented when a word is saved, for the mark's moment of motion.
-    private(set) var saveTick = 0
+    /// The saved words as the home page listed them before any was removed there. A word
+    /// removed on the home page keeps its place, struck through, until the page is left,
+    /// so ⌘D or a right-click puts it back where it was.
+    private var keptOnHome: [String]?
+    /// The saved words the home page lists, removed ones included.
+    var savedOnHome: [String] { keptOnHome ?? saved }
 
     // MARK: home
 
@@ -120,7 +138,6 @@ final class AppModel {
     private(set) var dictionaries: [DictSummary] = []
     /// Folders and files dictionaries are read from, as Settings lists them.
     private(set) var roots: [String] = []
-    var readyCount: Int { dictionaries.filter { $0.isReady && $0.enabled }.count }
     var busy: [DictSummary] { dictionaries.filter(\.isBusy) }
     var indexingProgress: Double? {
         let b = busy
@@ -141,6 +158,11 @@ final class AppModel {
     @ObservationIgnored private var reading: (word: String, place: Place?)?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
+    @ObservationIgnored private var linkTask: Task<Void, Never>?
+    /// The query `suggestions` belong to: Return waits for them to catch up with the typing.
+    @ObservationIgnored private var suggestedFor = ""
+    /// The library changed while find or ⌘J's list was open; the page refreshes when they close.
+    @ObservationIgnored private var refreshWhenFree = false
     @ObservationIgnored private var poller: Timer?
     @ObservationIgnored private var lastGeneration: UInt64 = 0
     @ObservationIgnored private var lastReadyIDs: Set<String> = []
@@ -155,6 +177,7 @@ final class AppModel {
         history = prefs.history
         saved = prefs.saved
         roots = prefs.roots
+        zoom = prefs.zoom
         applyConfiguration()
         // Esc, the hotkey and ⌘H all hide the app; that ends a visit.
         NotificationCenter.default.addObserver(forName: NSApplication.didHideNotification, object: nil, queue: .main) { _ in
@@ -240,20 +263,38 @@ final class AppModel {
     /// Re-runs the current search so newly indexed or re-ordered sources appear.
     private func refreshCurrent() {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        // The first suggestion was the best match among the dictionaries ready then, not the
-        // reader's choice: choose again now that there are more ("nhà", not "nhang").
-        if selected == 0 {
-            search(show: nil, force: true)
+        // Re-showing would close find or ⌘J's list under the reader: wait until they're done.
+        if finding || indexing {
+            refreshWhenFree = true
             return
         }
-        let word = selected > 0 && selected < suggestions.count ? suggestions[selected].word : shown?.word
-        search(show: word, force: true)
+        // The reader stays where they were in the entries.
+        if let r = reading, r.word == shown?.word, let place = r.place {
+            pendingLanding = (r.word, .place(place))
+        }
+        // A word the reader committed stays. The first suggestion while typing was only the
+        // best match among the dictionaries ready then: choose again ("nhà", not "nhang").
+        if let c = committed, label(c) == query {
+            search(show: c, force: true)
+        } else if selected == 0 {
+            search(show: nil, force: true)
+        } else {
+            search(show: selected > 0 && selected < suggestions.count ? suggestions[selected].word : shown?.word, force: true)
+        }
+    }
+
+    private func refreshIfWaiting() {
+        guard refreshWhenFree else { return }
+        refreshWhenFree = false
+        refreshCurrent()
     }
 
     // MARK: searching
 
     private func search(show pinned: String?, force: Bool = false) {
         searchTask?.cancel()
+        previewTask?.cancel()
+        refreshWhenFree = false
         let q = query
         guard !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             previewTask?.cancel()
@@ -264,13 +305,15 @@ final class AppModel {
             return
         }
         let engine = engine
+        // A known word (a link, Back, history) needn't wait for its suggestions.
+        if let pinned { lookUp(pinned, delay: .zero, force: force) }
         searchTask = Task {
             let s = await Task.detached(priority: .userInitiated) { engine.suggest(q) }.value
             guard !Task.isCancelled, q == self.query else { return }
             self.suggestions = s
+            self.suggestedFor = q
             if let pinned {
                 self.selected = s.firstIndex { $0.word.lowercased() == pinned.lowercased() } ?? -1
-                self.lookUp(pinned, delay: .zero, force: force)
             } else {
                 self.selected = 0
                 self.lookUp(s.first?.word ?? q, delay: .milliseconds(45), force: force)
@@ -300,8 +343,11 @@ final class AppModel {
         if indexing && r?.word != shown?.word { endIndex(.stay, refocus: false) }
         shown = r
         noResults = r.map { $0.hits.isEmpty } ?? false
-        let landing = pendingLanding.flatMap { $0.word == r?.word ? $0.landing : nil }
-        pendingLanding = nil
+        var landing: Landing?
+        if let p = pendingLanding, p.word == r?.word {
+            landing = p.landing
+            pendingLanding = nil
+        }
         article?.show(r?.hits.isEmpty == false ? r : nil, dictionaries: dictionaries, landing: landing)
     }
 
@@ -335,6 +381,14 @@ final class AppModel {
 
     /// Return key: commit the word on screen.
     func submit() {
+        // Return right after a keystroke: the strip still holds the last query's words.
+        if !query.isEmpty, suggestedFor != query, let pending = searchTask {
+            Task {
+                await pending.value
+                if self.suggestedFor == self.query { self.submit() }
+            }
+            return
+        }
         if query.isEmpty, let item = homeSelection {
             open(item)
         } else if selected >= 0 && selected < suggestions.count {
@@ -352,8 +406,10 @@ final class AppModel {
     /// same dictionary, on what the link's text (`text`) names.
     func follow(_ target: String, text: String?, from dict: String) {
         let engine = engine
-        Task {
+        linkTask?.cancel()
+        linkTask = Task {
             let link = await Task.detached(priority: .userInitiated) { engine.resolveLink(dict: dict, target: target) }.value
+            guard !Task.isCancelled else { return }
             let find = text.flatMap { $0.isEmpty ? nil : $0 }
             self.commit(link.word, landing: dict.isEmpty ? nil : .anchor(dict: dict, id: link.anchor, find: find))
         }
@@ -375,6 +431,7 @@ final class AppModel {
     func commit(_ word: String, landing: Landing? = nil) {
         let w = word.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !w.isEmpty else { return }
+        pendingResume = nil
         if let c = committed, c != w {
             backStack.append(visit(c))
             if backStack.count > 200 { backStack.removeFirst() }
@@ -390,6 +447,15 @@ final class AppModel {
         // Landing in the article already on screen still has to re-show it.
         setQuery(label(word), show: word, force: landing != nil)
         requestFocus(selectAll: true)
+    }
+
+    /// A fresh page (first load, a reopened window, a reload): what it should show, and where.
+    /// Find and ⌘J's list belonged to the page that went.
+    func pageLoaded() -> (LookupResult?, Landing?) {
+        endFind(refocus: false)
+        endIndex(.stay, refocus: false)
+        let place = reading.flatMap { $0.word == shown?.word ? $0.place : nil }
+        return (shown, place.map(Landing.place))
     }
 
     /// The word on screen and the place in it, for a relaunch to come back to.
@@ -429,6 +495,7 @@ final class AppModel {
         search(show: word, force: force)
     }
 
+    /// Esc, ⇧⌘H or the line's clear button: back to the home page.
     func clear() {
         if query.isEmpty { return }
         query = ""
@@ -472,13 +539,20 @@ final class AppModel {
         focusTick &+= 1
     }
 
+    /// ↑↓, ⌘↑↓, Page Up and Down, Home and End typed in the search line scroll the entries,
+    /// as they would a document, and the line keeps the focus and its selected word.
+    func scrollPage() -> Bool {
+        guard canFind, let key = NSApp.currentEvent, key.type == .keyDown || key.type == .keyUp else { return false }
+        article?.scroll(with: key)
+        return true
+    }
+
     /// A character typed while the article had focus.
     func typed(_ key: String) {
-        // The arrows mean what they mean in the search field (or the find line).
+        // ↑↓ scroll the page by themselves; it sends them only while ⌘J's list is open.
         switch key {
         case "ArrowDown", "ArrowUp":
-            let d = key == "ArrowDown" ? 1 : -1
-            if finding { findStep(d) } else { stepSource(d) }
+            if indexing { indexMove(key == "ArrowDown" ? 1 : -1) }
             return
         case "AltArrowDown", "AltArrowUp":
             if !finding && !indexing { moveSelection(key == "AltArrowDown" ? 1 : -1) }
@@ -555,6 +629,7 @@ final class AppModel {
         findPending = false
         article?.find("")
         if refocus { requestFocus(selectAll: false) }
+        refreshIfWaiting()
     }
 
     /// Next (1) or previous (-1) match; opens the find line if it is closed.
@@ -595,6 +670,7 @@ final class AppModel {
         indexing = false
         article?.indexClose(exit)
         if refocus { requestFocus(selectAll: false) }
+        refreshIfWaiting()
     }
 
     func indexMove(_ direction: Int) {
@@ -606,12 +682,19 @@ final class AppModel {
         if indexing { indexMove(direction) } else { article?.jump(direction) }
     }
 
+    /// ⌥⌘← and ⌥⌘→: hides or shows the entry the reader is on, as a click on its name does.
+    func hideCurrent(_ hide: Bool) {
+        guard canFind else { return }
+        article?.hideCurrent(hide)
+    }
+
     /// The page reports the selection, or that it closed the list itself (a click).
     func noteIndex(open: Bool, name: String, matches: Int, total: Int) {
         guard open else {
             if indexing {
                 indexing = false
                 requestFocus(selectAll: false)
+                refreshIfWaiting()
             }
             return
         }
@@ -639,20 +722,37 @@ final class AppModel {
 
     var shownIsSaved: Bool { shownWord.map(isSaved) ?? false }
 
-    /// ⌘D: saves the word on screen, or removes it when it is already saved.
-    func toggleSaved() {
-        guard let w = shownWord else { return }
-        if isSaved(w) {
-            unsave(w)
-        } else {
-            saved.insert(w, at: 0)
-            prefs.saved = saved
-            saveTick &+= 1
+    /// What ⌘D acts on: the word on screen, or on the home page the word the keyboard is on.
+    var focusWord: String? {
+        guard query.isEmpty else { return shownWord }
+        switch homeSelection {
+        case .saved(let w), .recent(let w): return w
+        default: return nil
         }
     }
 
-    func unsave(_ word: String) {
-        if homeSelection == .saved(word) { homeSelection = nil }
+    var focusIsSaved: Bool { focusWord.map(isSaved) ?? false }
+
+    /// ⌘D: saves the word in focus (or `word`), or removes it when it is already saved.
+    func toggleSaved(_ word: String? = nil) {
+        guard let w = word ?? focusWord else { return }
+        isSaved(w) ? unsave(w) : save(w)
+    }
+
+    private func save(_ word: String) {
+        let same = { (w: String) in w.caseInsensitiveCompare(word) == .orderedSame }
+        if let kept = keptOnHome, let i = kept.firstIndex(where: same) {
+            // Back in its place among the others.
+            saved.insert(word, at: kept[..<i].filter(isSaved).count)
+        } else {
+            saved.insert(word, at: 0)
+            keptOnHome?.insert(word, at: 0)
+        }
+        prefs.saved = saved
+    }
+
+    private func unsave(_ word: String) {
+        if query.isEmpty && keptOnHome == nil { keptOnHome = saved }
         saved.removeAll { $0.caseInsensitiveCompare(word) == .orderedSame }
         prefs.saved = saved
     }
@@ -672,8 +772,9 @@ final class AppModel {
 
     /// The home page's words in the order ↑↓ walk them.
     var homeItems: [HomeItem] {
-        let folded = !savedExpanded && saved.count > Self.savedShown
-        var items = saved.prefix(folded ? Self.savedShown : saved.count).map(HomeItem.saved)
+        let listed = savedOnHome
+        let folded = !savedExpanded && listed.count > Self.savedShown
+        var items = listed.prefix(folded ? Self.savedShown : listed.count).map(HomeItem.saved)
         if folded { items.append(.more) }
         return items + history.prefix(Self.recentShown).map(HomeItem.recent)
     }
@@ -696,11 +797,13 @@ final class AppModel {
             commit(w)
         case .more:
             savedExpanded = true
-            if homeSelection == .more { homeSelection = saved.indices.contains(Self.savedShown) ? .saved(saved[Self.savedShown]) : nil }
+            let listed = savedOnHome
+            if homeSelection == .more { homeSelection = listed.indices.contains(Self.savedShown) ? .saved(listed[Self.savedShown]) : nil }
         }
     }
 
     private func endHomeVisit() {
+        keptOnHome = nil
         savedExpanded = false
         homeSelection = nil
         homeReturn = nil
@@ -723,11 +826,15 @@ final class AppModel {
         }
     }
 
-    var zoom: Double {
-        get { prefs.zoom }
-        set {
-            prefs.zoom = min(2.0, max(0.7, newValue))
-            article?.setZoom(prefs.zoom)
+    /// The page's zoom (Text Size). Stored, not read through from prefs, so the header,
+    /// which lines up with the page's column, follows it.
+    var zoom: Double = 1 {
+        didSet {
+            // On the slider's 5% steps, so steps of 10% from the menu never drift.
+            let z = (min(2.0, max(0.7, zoom)) * 20).rounded() / 20
+            if z != zoom { zoom = z }
+            prefs.zoom = zoom
+            article?.setZoom(zoom)
         }
     }
 }

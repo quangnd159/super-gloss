@@ -109,8 +109,12 @@ impl<R: Read> BlockReader<R> {
         } else {
             lc - 4
         };
-        buf.resize(len, 0);
-        self.r.read_exact(buf).context("truncated block")?;
+        // The buffer grows with the data that arrives, not with the length field (up to 4 GiB).
+        buf.clear();
+        (&mut self.r).take(len as u64).read_to_end(buf)?;
+        if buf.len() != len {
+            bail!("truncated block");
+        }
         Ok(Some(typ))
     }
 }
@@ -402,113 +406,115 @@ fn header_block(data: &[u8], meta: &mut Meta, cs: &mut Charsets) -> bool {
 }
 
 pub fn build(path: &Path, ctx: &BuildCtx) -> Result<DictInfo> {
-    let total = std::fs::metadata(path)?.len().max(1) as f32;
-    // Decoding depends on charset headers; they precede entries in every known file,
-    // but if one arrives late we rebuild with the final charsets.
-    let mut forced: Option<Charsets> = None;
-    for _attempt in 0..2 {
-        let mut cs = forced.take().unwrap_or(Charsets { default: encoding_rs::WINDOWS_1252, source: None, target: None, utf8: false });
-        let mut meta = Meta::default();
-        let mut br = BlockReader { r: open_stream(path)? };
-        let mut buf = Vec::new();
-        let mut arts = ChunkStoreWriter::create(ctx.dir, "articles")?;
-        let mut res = ChunkStoreWriter::create(ctx.dir, "res")?;
-        let mut idx = IndexBuilder::new();
-        let mut ridx = IndexBuilder::new();
-        let mut seen_entry = false;
-        let mut late_charset = false;
-        let mut n = 0usize;
-        let mut html = String::new();
-        while let Some(typ) = br.next(&mut buf)? {
-            match typ {
-                0 => {
-                    if buf.len() >= 3 && buf[0] == 8 {
-                        cs.default = charset(buf[2]);
-                        late_charset |= seen_entry;
-                    }
-                }
-                3 => {
-                    if header_block(&buf, &mut meta, &mut cs) {
-                        late_charset |= seen_entry;
-                    }
-                }
-                2 => {
-                    let nl = *buf.first().unwrap_or(&0) as usize;
-                    if buf.len() > nl {
-                        let name = String::from_utf8_lossy(&buf[1..1 + nl]).into_owned();
-                        let (o, l) = res.append(&buf[1 + nl..])?;
-                        ridx.add_raw(name.to_lowercase().into_bytes(), &name, Locator { a: o, b: l });
-                    }
-                }
-                1 | 7 | 10 | 11 => {
-                    seen_entry = true;
-                    let Some(e) = parse_entry(typ, &buf, &cs) else { continue };
-                    if e.headword.trim().is_empty() {
-                        continue;
-                    }
-                    html.clear();
-                    if let Some(t) = &e.transcription {
-                        html.push_str("<div class=\"bgl-tr\">[");
-                        html.push_str(&html_escape(t));
-                        html.push_str("]</div>");
-                    }
-                    html.push_str(&super::markup::normalize_links(&e.definition));
-                    let (o, l) = arts.append(html.as_bytes())?;
-                    // Locator: article (offset, length); display headword stored in index.
-                    let shown = e.display.as_deref().map(strip_html).filter(|s| !s.trim().is_empty());
-                    let head = shown.clone().unwrap_or_else(|| e.headword.clone());
-                    let loc = Locator { a: o, b: l };
-                    // Every key opens the entry under the headword it shows.
-                    idx.add_form(&e.headword, &head, loc);
-                    if crate::fold::fold(&head) != crate::fold::fold(&e.headword) {
-                        idx.add(&head, loc);
-                    }
-                    for a in &e.alternates {
-                        idx.add_form(a, &head, loc);
-                    }
-                    n += 1;
-                    if n % 4096 == 0 {
-                        ctx.progress(0.95f32.min(n as f32 * 300.0 / total));
-                    }
-                }
-                4 => break,
-                _ => {}
-            }
-        }
-        if late_charset && forced.is_none() && _attempt == 0 {
-            forced = Some(cs);
-            continue;
-        }
-        arts.finish()?;
-        res.finish()?;
-        let count = idx.len();
-        idx.write(ctx.dir, "keys")?;
-        ridx.write(ctx.dir, "reskeys")?;
-        let name = if meta.title.is_empty() {
-            path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-        } else {
-            meta.title.clone()
-        };
-        let mut info = DictInfo::new(name, "Babylon");
-        info.entries = count as u64;
-        info.author = meta.author.clone();
-        info.description = meta.description.clone();
-        if !meta.copyright.is_empty() {
-            if !info.description.is_empty() {
-                info.description.push_str("<br>");
-            }
-            info.description.push_str(&meta.copyright);
-        }
-        info.source_lang = meta.source_lang.clone();
-        info.target_lang = meta.target_lang.clone();
-        if let Some(ico) = &meta.icon {
-            let p = ctx.dir.join("icon.ico");
-            std::fs::write(&p, ico)?;
-            info.icon = Some("icon.ico".into());
-        }
-        return Ok(info);
+    let first = Charsets { default: encoding_rs::WINDOWS_1252, source: None, target: None, utf8: false };
+    // Decoding depends on charset headers. They precede entries in every known file, but
+    // when one arrives late, the file is read again with the charsets it ended with.
+    let (info, late) = build_pass(path, ctx, first)?;
+    match late {
+        Some(cs) => Ok(build_pass(path, ctx, cs)?.0),
+        None => Ok(info),
     }
-    unreachable!()
+}
+
+/// Converts the file once, decoding with `cs`. Also returns the final charsets when a
+/// charset header came after entries had been decoded with the earlier ones.
+fn build_pass(path: &Path, ctx: &BuildCtx, mut cs: Charsets) -> Result<(DictInfo, Option<Charsets>)> {
+    let total = std::fs::metadata(path)?.len().max(1) as f32;
+    let mut meta = Meta::default();
+    let mut br = BlockReader { r: open_stream(path)? };
+    let mut buf = Vec::new();
+    let mut arts = ChunkStoreWriter::create(ctx.dir, "articles")?;
+    let mut res = ChunkStoreWriter::create(ctx.dir, "res")?;
+    let mut idx = IndexBuilder::new();
+    let mut ridx = IndexBuilder::new();
+    let mut seen_entry = false;
+    let mut late_charset = false;
+    let mut n = 0usize;
+    let mut html = String::new();
+    while let Some(typ) = br.next(&mut buf)? {
+        match typ {
+            0 => {
+                if buf.len() >= 3 && buf[0] == 8 {
+                    cs.default = charset(buf[2]);
+                    late_charset |= seen_entry;
+                }
+            }
+            3 => {
+                if header_block(&buf, &mut meta, &mut cs) {
+                    late_charset |= seen_entry;
+                }
+            }
+            2 => {
+                let nl = *buf.first().unwrap_or(&0) as usize;
+                if buf.len() > nl {
+                    let name = String::from_utf8_lossy(&buf[1..1 + nl]).into_owned();
+                    let (o, l) = res.append(&buf[1 + nl..])?;
+                    ridx.add_raw(name.to_lowercase().into_bytes(), &name, Locator { a: o, b: l });
+                }
+            }
+            1 | 7 | 10 | 11 => {
+                seen_entry = true;
+                let Some(e) = parse_entry(typ, &buf, &cs) else { continue };
+                if e.headword.trim().is_empty() {
+                    continue;
+                }
+                html.clear();
+                if let Some(t) = &e.transcription {
+                    html.push_str("<div class=\"bgl-tr\">[");
+                    html.push_str(&html_escape(t));
+                    html.push_str("]</div>");
+                }
+                html.push_str(&super::markup::normalize_links(&e.definition));
+                let (o, l) = arts.append(html.as_bytes())?;
+                // Locator: article (offset, length); display headword stored in index.
+                let shown = e.display.as_deref().map(strip_html).filter(|s| !s.trim().is_empty());
+                let head = shown.clone().unwrap_or_else(|| e.headword.clone());
+                let loc = Locator { a: o, b: l };
+                // Every key opens the entry under the headword it shows.
+                idx.add_form(&e.headword, &head, loc);
+                if crate::fold::fold(&head) != crate::fold::fold(&e.headword) {
+                    idx.add(&head, loc);
+                }
+                for a in &e.alternates {
+                    idx.add_form(a, &head, loc);
+                }
+                n += 1;
+                if n % 4096 == 0 {
+                    ctx.progress(0.95f32.min(n as f32 * 300.0 / total));
+                }
+            }
+            4 => break,
+            _ => {}
+        }
+    }
+    arts.finish()?;
+    res.finish()?;
+    let count = idx.len();
+    idx.write(ctx.dir, "keys")?;
+    ridx.write(ctx.dir, "reskeys")?;
+    let name = if meta.title.is_empty() {
+        path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    } else {
+        meta.title.clone()
+    };
+    let mut info = DictInfo::new(name, "Babylon");
+    info.entries = count as u64;
+    info.author = meta.author.clone();
+    info.description = meta.description.clone();
+    if !meta.copyright.is_empty() {
+        if !info.description.is_empty() {
+            info.description.push_str("<br>");
+        }
+        info.description.push_str(&meta.copyright);
+    }
+    info.source_lang = meta.source_lang.clone();
+    info.target_lang = meta.target_lang.clone();
+    if let Some(ico) = &meta.icon {
+        let p = ctx.dir.join("icon.ico");
+        std::fs::write(&p, ico)?;
+        info.icon = Some("icon.ico".into());
+    }
+    Ok((info, late_charset.then_some(cs)))
 }
 
 fn strip_html(s: &str) -> String {
@@ -573,6 +579,13 @@ mod tests {
         assert_eq!(e.display.as_deref(), Some("run"));
         assert!(e.definition.ends_with("f(abcdef) x y"), "{}", e.definition);
         assert!(e.definition.starts_with("<span class=\"bgl-pos\">"));
+    }
+
+    #[test]
+    fn block_longer_than_its_data_fails() {
+        // A type-1 block whose 4-byte length claims 4 GiB, followed by three bytes.
+        let data = [0x31u8, 0xff, 0xff, 0xff, 0xff, 1, 2, 3];
+        assert!(BlockReader { r: &data[..] }.next(&mut Vec::new()).is_err());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! DSL (ABBYY Lingvo) body markup → HTML.
 
 use super::markup::{entry_link, media_html, sanitize_color};
-use crate::util::{html_escape, html_escape_into};
+use crate::util::{html_escape, html_escape_into, link_allowed};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -321,11 +321,15 @@ impl Renderer<'_> {
                 "s" | "video" => media_html(out, &unescape(content)),
                 "url" => {
                     let u = plain_text(content);
-                    out.push_str("<a class=\"dsl-url\" href=\"");
-                    html_escape_into(out, u.trim());
-                    out.push_str("\">");
-                    html_escape_into(out, &u);
-                    out.push_str("</a>");
+                    if link_allowed(&u) {
+                        out.push_str("<a class=\"dsl-url\" href=\"");
+                        html_escape_into(out, u.trim());
+                        out.push_str("\">");
+                        html_escape_into(out, &u);
+                        out.push_str("</a>");
+                    } else {
+                        html_escape_into(out, &u);
+                    }
                 }
                 _ => {
                     let t = plain_text(content);
@@ -451,5 +455,13 @@ mod tests {
         assert!(h.contains("href=\"sound://a%20b.wav\""));
         assert!(h.contains("src=\"pic.jpg\""));
         assert!(h.contains("href=\"entry://go%20on\">go <i>on</i></a>"));
+    }
+
+    #[test]
+    fn script_links_stay_text() {
+        assert!(r("\t[url]https://example.org[/url]").contains("href=\"https://example.org\""));
+        let h = r("\t[url]javascript:alert(1)[/url] [s]javascript:alert(1)//x.txt[/s]");
+        assert!(!h.contains("href=\"javascript"), "{h}");
+        assert!(h.contains("javascript:alert(1)"), "{h}");
     }
 }

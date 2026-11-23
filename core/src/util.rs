@@ -20,10 +20,6 @@ pub fn be64(b: &[u8]) -> u64 {
 pub fn le16(b: &[u8]) -> u16 {
     u16::from_le_bytes([b[0], b[1]])
 }
-#[inline]
-pub fn le32(b: &[u8]) -> u32 {
-    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-}
 
 /// Bounds-checked byte cursor for binary formats.
 pub struct Cursor<'a> {
@@ -68,7 +64,13 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// Reads `len` bytes at `offset`. A range past the end of the file is refused before
+/// anything is allocated, so a length field in a malformed file can't size the buffer.
 pub fn read_at(file: &File, offset: u64, len: usize) -> Result<Vec<u8>> {
+    let flen = file.metadata()?.len();
+    if offset.checked_add(len as u64).is_none_or(|e| e > flen) {
+        bail!("read {len} bytes at {offset} beyond the end of the file ({flen})");
+    }
     let mut buf = vec![0u8; len];
     file.read_exact_at(&mut buf, offset)
         .with_context(|| format!("read {len} bytes at {offset}"))?;
@@ -91,6 +93,28 @@ pub fn safe_join(base: &Path, rel: &str) -> Option<PathBuf> {
         }
     }
     Some(out)
+}
+
+/// The file `rel` names below `base`, matched case-insensitively when the exact name is
+/// missing. A path that `..` or a symlink would lead outside `base` is refused.
+pub fn file_below(base: &Path, rel: &str) -> Option<PathBuf> {
+    let p = safe_join(base, rel)?;
+    let found = find_case_insensitive(p.parent()?, &p.file_name()?.to_string_lossy())?;
+    let real = found.canonicalize().ok()?;
+    real.starts_with(base.canonicalize().ok()?).then_some(real)
+}
+
+/// Whether a link in an article may lead to `url`: a relative one, or one of the schemes
+/// articles use. Browsers drop tabs and newlines anywhere in a URL and trim what
+/// surrounds it, so "java\tscript:" is checked as "javascript:".
+pub fn link_allowed(url: &str) -> bool {
+    let u: String = url.trim_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    match u.find([':', '/', '?', '#']) {
+        Some(i) if u.as_bytes()[i] == b':' => {
+            matches!(u[..i].to_ascii_lowercase().as_str(), "http" | "https" | "mailto" | "entry" | "sound" | "bword")
+        }
+        _ => true,
+    }
 }
 
 /// Finds a file in `dir` matching `name` case-insensitively.
@@ -291,6 +315,31 @@ mod tests {
         assert_eq!(safe_join(b, "\\a\\b.png").unwrap(), PathBuf::from("/x/a/b.png"));
         assert!(safe_join(b, "../etc/passwd").is_none());
         assert!(safe_join(b, "").is_none());
+    }
+    #[test]
+    fn files_stay_below_their_folder() {
+        let d = std::env::temp_dir().join(format!("sg-below-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("dict")).unwrap();
+        std::fs::write(d.join("dict/A.css"), "a").unwrap();
+        std::fs::write(d.join("secret"), "s").unwrap();
+        std::os::unix::fs::symlink(d.join("secret"), d.join("dict/leak")).unwrap();
+        std::os::unix::fs::symlink(&d, d.join("dict/up")).unwrap();
+        let base = d.join("dict");
+        assert!(file_below(&base, "a.css").is_some());
+        assert!(file_below(&base, "leak").is_none());
+        assert!(file_below(&base, "up/secret").is_none());
+        assert!(file_below(&base, "../secret").is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    #[test]
+    fn links() {
+        for u in ["entry://run", "sound://a.wav", "HTTPS://x.org", "mailto:a@b", "pics/a.png", "a.html#x", "#top", "x/y:z"] {
+            assert!(link_allowed(u), "{u}");
+        }
+        for u in ["javascript:alert(1)", " JavaScript:x", "java\tscript:x", "\u{1}javascript:x", "data:text/html,x", "vbscript:x", "file:///etc/passwd"] {
+            assert!(!link_allowed(u), "{u}");
+        }
     }
     #[test]
     fn entities() {

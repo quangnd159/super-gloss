@@ -11,14 +11,15 @@ struct UpdatePill: View {
             if updater.pillShown && updater.phase != .idle {
                 pill
                     .transition(reduceMotion ? .opacity : .asymmetric(
-                        insertion: .offset(y: 14).combined(with: .scale(scale: 0.94, anchor: .bottomTrailing))
+                        insertion: .offset(y: 14).combined(with: .scale(scale: 0.96, anchor: .bottomTrailing))
                             .combined(with: .opacity)
                             .animation(.spring(duration: 0.42, bounce: 0.18)),
                         removal: .scale(scale: 0.97, anchor: .bottomTrailing).combined(with: .opacity)
                             .animation(.easeOut(duration: 0.16))))
             }
         }
-        .animation(.spring(duration: 0.42, bounce: 0.18), value: updater.pillShown && updater.phase != .idle)
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.42, bounce: 0.18),
+                   value: updater.pillShown && updater.phase != .idle)
     }
 
     private var pill: some View {
@@ -157,7 +158,9 @@ private struct CloseButton: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
                 .background(.primary.opacity(hover ? 0.11 : 0.06), in: Circle())
-                .contentShape(Circle())
+                .padding(7)
+                .contentShape(Rectangle())
+                .padding(-7)
         }
         .buttonStyle(Pressable())
         .onHover { hover = $0 }
@@ -166,7 +169,7 @@ private struct CloseButton: View {
 }
 
 /// A press you can feel: the control gives a little under the pointer.
-private struct Pressable: ButtonStyle {
+struct Pressable: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
