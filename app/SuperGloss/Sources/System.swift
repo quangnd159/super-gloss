@@ -161,6 +161,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let path = url.path.removingPercentEncoding?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
                 let word = comps?.queryItems?.first { $0.name == "q" || $0.name == "word" }?.value
                     ?? (url.host == "lookup" ? path : [url.host?.removingPercentEncoding ?? "", path].filter { !$0.isEmpty }.joined(separator: "/"))
+                #if DEBUG
+                // supergloss://debug-select?dict=LDOCE&from=when&to=accident[&before=img]: selects text in an entry.
+                if url.host == "debug-select" {
+                    let q = { (k: String) in comps?.queryItems?.first { $0.name == k }?.value ?? "" }
+                    (AppModel.shared.article as? ArticleCoordinator)?.debugSelect(dict: q("dict"), from: q("from"), to: q("to"), before: q("before"))
+                    continue
+                }
+                #endif
                 if !word.isEmpty, word != "lookup" {
                     AppModel.shared.lookUpExternally(word)
                     AppDelegate.summon()

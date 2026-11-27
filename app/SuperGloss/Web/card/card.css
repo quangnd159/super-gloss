@@ -1,0 +1,87 @@
+/* The app's tokens (app.css), so a card reads as a page of Super Gloss. The card's
+   measures (--W, --H, --side, --inset) are card.js's. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --soft: #8a8a8e;
+  --accent: #c4471b;
+  --serif: "New York", ui-serif, Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --ink: #ececec;
+    --muted: #a1a1a6;
+    --soft: #8e8e93;
+    --accent: #ff8a5c;
+  }
+}
+html, body { margin: 0; }
+html { background: var(--bg); }
+body {
+  position: relative;
+  width: var(--W);
+  height: var(--H);
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--bg);
+  font: 13px/1.4 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The dictionary's name, as a label: capitals even out "LDOCE6" and "mtBab EV",
+   tracked as capitals want, with case-sensitive punctuation. */
+.by {
+  position: absolute;
+  inset-inline: var(--side);
+  top: var(--inset);
+  margin: 0;
+  color: var(--muted);
+  font: 500 12.5px/18px var(--sans);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  font-feature-settings: "case";
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A name in a script without capitals (Arabic, Chinese) is set as written: tracking
+   only pulls it apart. */
+.by.caseless { letter-spacing: 0; }
+.mark {
+  position: absolute;
+  inset-inline-start: var(--side);
+  bottom: var(--inset);
+  color: var(--soft);
+  font: 500 13px/16px var(--serif);
+}
+.grp { position: absolute; inset-inline: var(--side); }
+h1 {
+  margin: 0;
+  margin-inline-start: -0.045em; /* the capital's side bearing, so its stem sits on the edge */
+  font: 600 72px/1.04 var(--serif);
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+/* A window onto an entry: a frame laid out at the column's measure, scaled, and cut to
+   the rows it shows. Text may reach past the column's sides, never above or below. */
+.win { position: relative; clip-path: inset(0 -44px); }
+/* The frames share the card's origin, where WebKit hands a frame its owner's colour
+   scheme, so they must say both (the app's own frames are cross-origin and follow the system). */
+.win iframe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  border: 0;
+  background: transparent;
+  color-scheme: light dark;
+  transform-origin: 0 0;
+}
+.gap { padding: 12px 0 13px; color: var(--soft); font: 400 17px/1 var(--serif); }
+.ell { position: absolute; color: var(--muted); font-family: var(--serif); line-height: 1; }
+.rule { position: absolute; width: 2px; border-radius: 1px; background: var(--accent); }
+.veil { position: absolute; top: 0; left: -20px; pointer-events: none; }

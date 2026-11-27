@@ -111,7 +111,7 @@ struct UpdatePill: View {
 }
 
 /// Glass, lightly tinted with what the pill is saying; a material where glass isn't available.
-private struct PillSurface: ViewModifier {
+struct PillSurface: ViewModifier {
     let tint: Color
 
     func body(content: Content) -> some View {

@@ -1,0 +1,14 @@
+/* The line under the title, in the head's frame: one muted ink, the dictionary's
+   italic and bold kept. The accent beside the passage is the card's one colour. */
+body *, body *::before, body *::after {
+  color: #6e6e73 !important;
+  -webkit-text-fill-color: currentColor !important;
+  background-color: transparent !important;
+  border-color: currentColor !important;
+}
+/* Native pages take the app's dark tokens; foreign ones are inverted (article.css), so
+   they get the grey that inverts to about the same (#a2a2a2). */
+@media (prefers-color-scheme: dark) {
+  body.sg-native *, body.sg-native *::before, body.sg-native *::after { color: #a1a1a6 !important; }
+  body.sg-foreign *, body.sg-foreign *::before, body.sg-foreign *::after { color: #535353 !important; }
+}

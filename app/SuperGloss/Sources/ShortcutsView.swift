@@ -29,6 +29,7 @@ struct ShortcutsView: View {
                 ShortcutRow("Go to a dictionary", keys: ["⌘", "J"])
                 ShortcutRow("Pronounce", keys: ["⌘", "P"])
                 ShortcutRow("Save the word, or remove it", keys: ["⌘", "D"])
+                ShortcutRow("Share the selected passage as an image", keys: ["⇧", "⌘", "I"])
                 ShortcutRow("Hide the dictionary you're reading", keys: ["⌥", "⌘", "←"])
                 ShortcutRow("Show it again", keys: ["⌥", "⌘", "→"])
                 ShortcutRow("Hide or show any dictionary", gesture: "Click its name")

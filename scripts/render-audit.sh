@@ -2,7 +2,9 @@
 # Renders words across the dictionaries Super Gloss has, as the app does, and reports what
 # renders badly: sideways scrolling, missing images, the default face, script errors,
 # frames that keep growing or cut off their content. Also renders scripts/render-audit/fixtures.
-# Usage: scripts/render-audit.sh [--width 1000] [--dark] [--random N] [--only DICT]
+# With --cards, also shares passages of every entry as Share as Image does, and reports
+# any that make no card.
+# Usage: scripts/render-audit.sh [--width 1000] [--dark] [--random N] [--only DICT] [--cards]
 #                                [--root DIR]… [--words FILE] [--shots DIR] [word…]
 set -euo pipefail
 cd "${0:A:h}/.."

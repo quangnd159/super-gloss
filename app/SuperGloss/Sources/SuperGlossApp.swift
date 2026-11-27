@@ -42,6 +42,12 @@ struct AppCommands: Commands {
             Button("Add Dictionaries…") { chooseDictionaries() }
                 .keyboardShortcut("o")
         }
+        CommandGroup(after: .saveItem) {
+            Divider()
+            Button("Share as Image…") { model.shareAsImage() }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(!model.canShare)
+        }
         CommandGroup(replacing: .printItem) {}
         CommandGroup(after: .textEditing) {
             Button("Look Up…") { model.requestFocus(selectAll: true) }

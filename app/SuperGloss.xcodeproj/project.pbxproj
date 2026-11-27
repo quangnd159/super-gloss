@@ -14,6 +14,7 @@
 		625A704025ACAC0D7F823D6B /* System.swift in Sources */ = {isa = PBXBuildFile; fileRef = 867D86E8748C5FFD88958566 /* System.swift */; };
 		629EFC66520B19B0C2EC1DCA /* ArticleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46BA7A4041C5F5972C71961A /* ArticleView.swift */; };
 		69606D3D396B030CC5139915 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D03EE20DABE08D8B971D5764 /* MainView.swift */; };
+		6A98AA9D2FA3BCBCF6283149 /* ShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED7194E62936D9B75A6FE7C3 /* ShareCard.swift */; };
 		97617552305B8F2A573B1A6B /* Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F56641711E5A3BB3AD42714 /* Engine.swift */; };
 		9C3A630A9CC58CDBDD1B6A03 /* Updater.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09F7448044FECDAFF782705D /* Updater.swift */; };
 		9CBB0B905C1D22990435B61B /* ShortcutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 435717465F03B93179867D3C /* ShortcutsView.swift */; };
@@ -38,6 +39,7 @@
 		B282A9FF851F641C0A8287F6 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		BBD8C7029B6A0FDE1F4C8764 /* Credits.rtf */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; path = Credits.rtf; sourceTree = "<group>"; };
 		D03EE20DABE08D8B971D5764 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		ED7194E62936D9B75A6FE7C3 /* ShareCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareCard.swift; sourceTree = "<group>"; };
 		F8D3D12FC8AC90D7302DE597 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -70,6 +72,7 @@
 				D03EE20DABE08D8B971D5764 /* MainView.swift */,
 				F8D3D12FC8AC90D7302DE597 /* Models.swift */,
 				0A8871BABC101E5208831752 /* SettingsView.swift */,
+				ED7194E62936D9B75A6FE7C3 /* ShareCard.swift */,
 				435717465F03B93179867D3C /* ShortcutsView.swift */,
 				9B049D45ADB627DCC68B5115 /* SuperGlossApp.swift */,
 				867D86E8748C5FFD88958566 /* System.swift */,
@@ -189,6 +192,7 @@
 				69606D3D396B030CC5139915 /* MainView.swift in Sources */,
 				E2A296F9A54F4799B6CC4C2B /* Models.swift in Sources */,
 				4225F249FFB11CD795785E86 /* SettingsView.swift in Sources */,
+				6A98AA9D2FA3BCBCF6283149 /* ShareCard.swift in Sources */,
 				9CBB0B905C1D22990435B61B /* ShortcutsView.swift in Sources */,
 				1B67BC6DB1AC948AF9B41D3F /* SuperGlossApp.swift in Sources */,
 				625A704025ACAC0D7F823D6B /* System.swift in Sources */,

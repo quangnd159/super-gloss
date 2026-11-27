@@ -55,6 +55,7 @@ On first launch, drop a folder of dictionaries onto the window (or choose **File
 | `Esc` or `⇧⌘H` | clear the search line and go home to your saved and recent words |
 | `⌘D` | save the word, or remove it; on the home page, the word you've picked with `↓` |
 | `⌘P` | pronounce |
+| `⇧⌘I`, or right-click a selection | share the passage you've selected in an entry as an image |
 | `⌘R` | a random word |
 | `⌘=` `⌘-` `⌘0` | text size |
 | `⌘/` | every keyboard shortcut |

@@ -9,6 +9,9 @@ protocol ArticleController: AnyObject {
     /// Hands a key to the page to scroll by, as if it had focus: WebKit's own keyboard scrolling.
     func scroll(with key: NSEvent)
     func pronounce()
+    /// Shares the selection in an entry as an image, from the system's share picker
+    /// (`present`), or only has its card made, ready for when it is asked for.
+    func shareAsImage(present: Bool)
     func setZoom(_ zoom: Double)
     func setIcons(_ on: Bool)
     /// Hides (true) or shows the entry the reader is on: ⌘J's selection while the list is open.
@@ -110,6 +113,13 @@ final class AppModel {
 
     /// The entry the reader is on, as the page reports it, for Go › Hide and Show.
     var current: CurrentEntry?
+
+    /// The page has a selection in one entry, for File › Share as Image.
+    var canShare = false
+
+    /// A passing word to the reader, in the window's corner; it leaves on its own.
+    private(set) var notice: String?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
 
     // MARK: saved words
 
@@ -707,6 +717,22 @@ final class AppModel {
         indexTotal = total
     }
 
+
+    func shareAsImage() {
+        guard canShare else { return }
+        article?.shareAsImage(present: true)
+    }
+
+    func tell(_ message: String) {
+        notice = message
+        AccessibilityNotification.Announcement(message).post()
+        noticeTask?.cancel()
+        noticeTask = Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.16)) { notice = nil }
+        }
+    }
 
     // MARK: saved words
 

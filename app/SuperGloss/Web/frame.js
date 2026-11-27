@@ -1,6 +1,6 @@
 // Injected into every article iframe (not the main page). Reports its height,
-// routes link clicks to the app, and supports looking up a word by double-click or
-// right-click.
+// routes link clicks to the app, supports looking up a word by double-click or
+// right-click, and says where the selection lies for Share as Image.
 (() => {
   if (window.top === window) return;
   if (!/^sgloss:$/.test(location.protocol)) return;
@@ -249,6 +249,7 @@
     // The find line just opened: flatten the text now, while the first letters are typed.
     else if (m.type === 'prepare') { if (!index) index = buildIndex(); }
     else if (m.type === 'findCurrent') setCurrent(m.i);
+    else if (m.type === 'share') share(!!m.present);
   });
 
   // ---------- direction ----------
@@ -464,6 +465,9 @@
     if (w) post({ type: 'lookup', word: w });
   });
 
+  const under = (range, x, y) => Array.from(range.getClientRects()).some((b) =>
+    x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1);
+
   // The word under the pointer, selected; null off the text.
   const wordAt = (x, y) => {
     const r = document.caretRangeFromPoint(x, y);
@@ -475,9 +479,7 @@
       const range = document.createRange();
       range.setStart(node, s.index);
       range.setEnd(node, s.index + s.segment.length);
-      const hit = Array.from(range.getClientRects()).some((b) =>
-        x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1);
-      if (!hit) return null;
+      if (!under(range, x, y)) return null;
       const sel = window.getSelection();
       sel.removeAllRanges();
       sel.addRange(range);
@@ -486,18 +488,59 @@
     return null;
   };
 
+  // What Share as Image takes: a selection in one entry with some text in it (a picture
+  // alone makes no card). The page hears whenever there comes to be one or no longer is.
+  const shareable = () => {
+    const s = window.getSelection();
+    if (!s.rangeCount || s.isCollapsed || !/[\p{L}\p{N}]/u.test(s.toString())) return null;
+    const r = s.getRangeAt(0);
+    const entry = (n) => (n.nodeType === 1 ? n : n.parentElement).closest('.sg-entry');
+    return entry(r.startContainer) === entry(r.endContainer) ? r : null;
+  };
+  let sharing = false;
+  document.addEventListener('selectionchange', () => {
+    if (sharing !== !!shareable()) post({ type: 'selection', on: (sharing = !sharing) });
+  });
+  // Where the selection lies, for the card to find it in its own copy of the entry: a path
+  // of child indices from <body>, then an offset.
+  const path = (n, offset) => {
+    const p = [];
+    for (; n !== document.body; n = n.parentNode) p.unshift(Array.prototype.indexOf.call(n.parentNode.childNodes, n));
+    return p.join('.') + ':' + offset;
+  };
+  const share = (present) => {
+    const r = shareable();
+    const b = r && r.getBoundingClientRect();
+    post({ type: 'share', present, sel: r && {
+      start: path(r.startContainer, r.startOffset), end: path(r.endContainer, r.endOffset), text: r.toString(),
+      rect: { x: b.left, y: b.top, w: b.width, h: b.height },
+    } });
+  };
+
   // A right-click offers the selection, or else the word under the pointer, to look up:
-  // the menu's first item (ArticleView). Told to the app directly, so it is there
-  // before the menu opens.
+  // the menu's first item (ArticleView), and a selection the reader made to share as an
+  // image. Not the word or link WebKit selects as the click lands: one word marked on a
+  // card says nothing. Told to the app directly, so it is there before the menu opens. A
+  // click inside a selection keeps it, as in any Mac text, even when it is too long to look up.
+  let made = null;
+  document.addEventListener('mousedown', (e) => {
+    if (e.button === 2 || e.ctrlKey) made = shareable()?.cloneRange();
+  }, true);
+  const same = (a, b) => !!a && !!b && a.compareBoundaryPoints(Range.START_TO_START, b) === 0
+    && a.compareBoundaryPoints(Range.END_TO_END, b) === 0;
   document.addEventListener('contextmenu', (e) => {
     const selected = lookable(window.getSelection());
-    const word = selected || lookable(wordAt(e.clientX, e.clientY));
-    try { window.webkit.messageHandlers.sg.postMessage({ type: 'menu', word }); } catch (_) {}
+    const held = shareable();
+    const word = selected || (held && under(held, e.clientX, e.clientY) ? '' : lookable(wordAt(e.clientX, e.clientY)));
+    const now = shareable();
+    post({ type: 'here', on: !!now });
+    try { window.webkit.messageHandlers.sg.postMessage({ type: 'menu', word, share: same(now, made) }); } catch (_) {}
+    made = null;
   });
 
   // A press anywhere in an article: the page closes what floats over it.
   document.addEventListener('mousedown', (e) => {
-    if (e.button === 0) post({ type: 'press' });
+    if (e.button === 0) post({ type: 'press', on: !!shareable() });
   }, true);
   // The wheel over an article scrolls the page, which then stops holding a position.
   let wheeled = 0;

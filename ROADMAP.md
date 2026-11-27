@@ -8,6 +8,10 @@ Super Gloss stays minimal and should just work. Each item below has to fit that.
 2. **Lemmatizers beyond English** (French, German, Spanish, …), so "ran → run"-style matching works in every language.
 3. **UI tests.** Automated tests for the hotkey and focus behavior. (The universal build and the signed, notarized DMG shipped in 1.0.0.)
 
+## Shipped in 1.3.0
+
+- **Share as Image.** Select a passage in an entry and press `⇧⌘I`, or right-click it: Super Gloss sets it on a card under the word, marked where it stands in its dictionary's own typesetting, and hands the image to the system's share menu. One size (1080 × 1350), text only, in the app's light or dark.
+
 ## Shipped in 1.2.3
 
 - **One column at every size.** The margin list from 1.2.0 is gone: entries sit in one centred column under a pinned dictionary name, and the books button on the search line (or `⌘J`) goes to any of them.

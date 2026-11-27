@@ -73,7 +73,12 @@ struct MainView: View {
             .overlay(alignment: .top) { IndexingLine(progress: model.indexingProgress) }
             .overlay(alignment: .topTrailing) { navButtons.padding(.trailing, 13) }
             .overlay { if dropTargeted { DropTarget() } }
-            .overlay(alignment: .bottomTrailing) { UpdatePill(updater: .shared) }
+            .overlay(alignment: .bottomTrailing) {
+                VStack(alignment: .trailing, spacing: 0) {
+                    if let notice = model.notice { NoticePill(text: notice) }
+                    UpdatePill(updater: .shared)
+                }
+            }
         }
         .background(Color.paper)
         .ignoresSafeArea()
@@ -982,6 +987,22 @@ struct NoResults: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
         }
+    }
+}
+
+/// A passing word in the window's corner, in the update pill's shape. It answers a command,
+/// so it comes at once; it leaves on its own (AppModel.tell).
+struct NoticePill: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 16)
+            .frame(height: 38)
+            .modifier(PillSurface(tint: .gray))
+            .padding(.trailing, 16)
+            .padding(.bottom, 16)
+            .transition(.asymmetric(insertion: .identity, removal: .opacity))
     }
 }
 

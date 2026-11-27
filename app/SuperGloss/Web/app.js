@@ -10,6 +10,7 @@
   let shownWord = null;
   let list = []; // the page's sections, in order
   let ghost = null; // the page being replaced, kept on screen until the new one is ready
+  let chosen = []; // frames with a selection to share, the latest last
   const still = matchMedia('(prefers-reduced-motion: reduce)');
   const glide = () => (still.matches ? 'auto' : 'smooth');
 
@@ -58,6 +59,8 @@
     const gen = ++generation;
     indexClose('stay', true); // the list was for the page being replaced
     frames.clear();
+    chosen = [];
+    reportShareable();
     keepOnScreen();
     pinned = null;
     shownWord = p.word;
@@ -179,6 +182,7 @@
       report();
     }
     reportCurrent();
+    reportShareable();
   }
 
   // The entry the keyboard's Hide and Show act on: the one selected in ⌘J's list while it
@@ -259,7 +263,9 @@
       case 'press':
         cancelHold();
         indexClose('stay', true);
+        here(f, m.on);
         break;
+      case 'here': here(f, m.on); break;
       case 'wheel':
         cancelHold();
         break;
@@ -274,8 +280,43 @@
       case 'sound': native({ type: 'sound', dict: f.id, path: String(m.path || '') }); break;
       case 'open': native({ type: 'open', url: String(m.url || '') }); break;
       case 'key': native({ type: 'key', key: String(m.key || '') }); break;
+      case 'selection':
+        chosen = chosen.filter((x) => x !== f);
+        if (m.on) chosen.push(f);
+        reportShareable();
+        break;
+      case 'share':
+        if (m.sel) {
+          // the selection's box, in the page's viewport rather than its frame's
+          const b = f.iframe.getBoundingClientRect(), r = m.sel.rect;
+          native({ type: 'share', present: !!m.present, dict: f.id, start: String(m.sel.start), end: String(m.sel.end),
+            text: String(m.sel.text), rect: { x: b.left + r.x, y: b.top + r.y, w: r.w, h: r.h } });
+        }
+        break;
     }
   });
+
+  // ---------- share as image ----------
+  // The selection to share is the latest one made in an entry that is shown, and in the
+  // entry last pressed in. Native hears whether there is one, for its menu, and asks for it
+  // (`present`: to show it, not only to have it ready) when the reader shares.
+  const sharable = () => chosen.filter(visible);
+  // The reader is now in this entry (a press, a right-click): its selection, if any, is the
+  // one to share. One left standing in another entry is no longer theirs to share, as it
+  // is no longer theirs to copy.
+  function here(f, on) {
+    chosen = on ? [f] : [];
+    reportShareable();
+  }
+  let shareShown = false;
+  function reportShareable() {
+    const on = sharable().length > 0;
+    if (on !== shareShown) native({ type: 'shareable', on: (shareShown = on) });
+  }
+  function share(present) {
+    const f = sharable().at(-1);
+    if (f) try { f.iframe.contentWindow.postMessage({ sg: { type: 'share', present } }, '*'); } catch (_) {}
+  }
   // With the page itself in focus (a click between entries, on a name), keys go where an
   // entry's go (frame.js keeps the same rules): ↑↓ and Space scroll, ⌥↑↓ go along the
   // related words, typing searches. While ⌘J's list is open, ↑↓ go through it.
@@ -578,6 +619,8 @@
     indexClose('stay', true); // the list was for the page being replaced
     generation++;
     frames.clear();
+    chosen = [];
+    reportShareable();
     shownWord = null;
     find.cur = null;
     clearTimeout(find.timer);
@@ -859,7 +902,7 @@
   function icons(on) { document.documentElement.classList.toggle('noicons', !on); }
 
   window.sg = {
-    icons, show, jump, pronounce, clear, find: findIn, findStep, prepareFind, hideCurrent, cancelHold,
+    icons, show, jump, pronounce, clear, find: findIn, findStep, prepareFind, hideCurrent, cancelHold, share,
     indexOpen, indexQuery, indexMove, indexClose: (how) => indexClose(how, false),
   };
   native({ type: 'loaded' });

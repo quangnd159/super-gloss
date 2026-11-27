@@ -1,5 +1,6 @@
 import AppKit
 import ImageIO
+import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -22,6 +23,9 @@ struct ArticleView: NSViewRepresentable {
            let src = try? String(contentsOf: url, encoding: .utf8) {
             ucc.addUserScript(WKUserScript(source: src, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         }
+        #if DEBUG
+        ucc.addUserScript(WKUserScript(source: ArticleCoordinator.debugSelectScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        #endif
         let web = ArticleWebView(frame: .zero, configuration: config)
         web.navigationDelegate = c
         web.uiDelegate = c
@@ -30,6 +34,7 @@ struct ArticleView: NSViewRepresentable {
         web.allowsMagnification = false
         web.pageZoom = model.zoom
         web.lookUp = { [weak model] w in model?.commit(w) }
+        web.share = { [weak c] present in c?.shareAsImage(present: present) }
         c.web = web
         model.article = c
         web.load(URLRequest(url: URL(string: "sgloss://app/index.html")!))
@@ -41,11 +46,16 @@ struct ArticleView: NSViewRepresentable {
 
 /// WKWebView without browser affordances: no file drops (the window handles
 /// dictionary drops), no reload/navigation menu items. Its right-click menu opens with
-/// looking up the word under the pointer here, in place of the system's dictionary.
+/// looking up the word under the pointer here, in place of the system's dictionary, and
+/// offers a selection to share as an image.
 final class ArticleWebView: WKWebView {
     /// The word the page offered as the right-click landed; see frame.js.
     var menuWord = ""
+    /// The right-click landed with a selection to share.
+    var menuShare = false
     var lookUp: ((String) -> Void)?
+    /// Asks the page for its selection, to show the share picker (true) or only to have its card ready.
+    var share: ((Bool) -> Void)?
 
     override func registerForDraggedTypes(_ newTypes: [NSPasteboard.PasteboardType]) {}
 
@@ -68,17 +78,28 @@ final class ArticleWebView: WKWebView {
             if !menu.items.isEmpty { menu.insertItem(.separator(), at: 0) }
             menu.insertItem(item, at: 0)
         }
+        if menuShare {
+            let item = NSMenuItem(title: "Share as Image…", action: #selector(shareSelection(_:)), keyEquivalent: "")
+            item.target = self
+            if menuWord.isEmpty, !menu.items.isEmpty { menu.insertItem(.separator(), at: 0) }
+            menu.insertItem(item, at: menuWord.isEmpty ? 0 : 1)
+            // The card is made while the pointer travels to the item.
+            share?(false)
+        }
         super.willOpenMenu(menu, with: event)
     }
 
     override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
         super.didCloseMenu(menu, with: event)
         menuWord = ""
+        menuShare = false
     }
 
     @objc private func lookUpMenuWord(_ sender: NSMenuItem) {
         if let w = sender.representedObject as? String { lookUp?(w) }
     }
+
+    @objc private func shareSelection(_ sender: NSMenuItem) { share?(true) }
 }
 
 /// Breaks the WKUserContentController → handler retain cycle.
@@ -214,6 +235,11 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
             if let k = body["key"] as? String { model.typed(k) }
         case "menu":
             (web as? ArticleWebView)?.menuWord = body["word"] as? String ?? ""
+            (web as? ArticleWebView)?.menuShare = body["share"] as? Bool ?? false
+        case "shareable":
+            model.canShare = body["on"] as? Bool ?? false
+        case "share":
+            share(body)
         case "current":
             model.current = (body["name"] as? String).map { CurrentEntry(name: $0, hidden: body["hidden"] as? Bool ?? false) }
         case "index":
@@ -223,6 +249,57 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
             break
         }
     }
+
+    // MARK: share as image
+
+    private lazy var cards = ShareCard(schemes: self, store: web?.configuration.websiteDataStore ?? .nonPersistent())
+    /// When the reader asked for the picker, for the log.
+    private var shareAsked: ContinuousClock.Instant?
+
+    /// The page answers with its selection (`share` below).
+    func shareAsImage(present: Bool) {
+        if present { shareAsked = .now }
+        run("sg.share(\(present))")
+    }
+
+    private func share(_ body: [String: Any]) {
+        guard let web, let dict = body["dict"] as? String, let word = model.shownWord,
+              let hit = model.shown?.hits.first(where: { $0.dict == dict }),
+              let start = body["start"] as? String, let end = body["end"] as? String, let text = body["text"] as? String,
+              let r = body["rect"] as? [String: Double] else { return }
+        let present = body["present"] as? Bool ?? false
+        let selection = ShareCard.Selection(
+            dict: dict, entries: hit.entries, word: word,
+            name: model.dictionaries.first { $0.id == dict }?.shortName ?? DictSummary.shorten(hit.name),
+            start: start, end: end, text: text,
+            dark: web.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        // CSS px in the page's viewport, to the view's points (the view is flipped).
+        let z = web.pageZoom
+        let rect = NSRect(x: (r["x"] ?? 0) * z, y: (r["y"] ?? 0) * z, width: (r["w"] ?? 0) * z, height: (r["h"] ?? 0) * z)
+        cards.render(selection) { [weak self] outcome in
+            // Not over a page the reader has since left for another word.
+            guard present, let self, let web = self.web, self.model.shownWord == word else { return }
+            switch outcome {
+            case let .image(file):
+                // Out of sight (scrolled away), it points from the edge of the view it lies past.
+                var at = rect.intersection(web.bounds)
+                if at.isEmpty {
+                    at = NSRect(x: min(max(rect.minX, 0), web.bounds.maxX), y: rect.maxY <= 0 ? 0 : web.bounds.maxY,
+                                width: min(rect.width, web.bounds.width), height: 0)
+                }
+                NSSharingServicePicker(items: [NSItemProvider(contentsOf: file) ?? file]).show(relativeTo: at, of: web, preferredEdge: .maxY)
+                if let t = self.shareAsked {
+                    Self.log.debug("picker \(Int((ContinuousClock.now - t) / .milliseconds(1))) ms after asking")
+                }
+            case .tooLong:
+                self.model.tell("Select less to share as an image")
+            case .failed:
+                NSSound.beep()
+            }
+        }
+    }
+
+    private static let log = Logger(subsystem: "app.supergloss.SuperGloss", category: "share")
 
     // MARK: navigation policy
 
@@ -286,21 +363,26 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
         }
         let key = ObjectIdentifier(task)
         active[key] = task
+        let forCard = webView !== web
         let engine = model.engine
         let iconPath: String? = url.host == "app" && url.path.hasPrefix("/icon/")
             ? model.dictionaries.first { $0.id == url.lastPathComponent }?.icon : nil
         // A queue of its own: an entry's many pictures and sounds never hold up the
         // lookups that typing waits on.
         Self.serving.async {
-            let app = url.host == "app"
-            let served = app ? AppResources.serve(path: url.path, iconPath: iconPath) : engine.serve(url.absoluteString)
-            Task { @MainActor in self.finish(key, url: url, served: served, app: app) }
+            // The share card's own files are served on the entry's origin (ShareCard).
+            let card = url.host != "app" && url.path.hasPrefix("/__card/")
+            let app = url.host == "app" || card
+            let served = app ? AppResources.serve(path: card ? "/card/" + url.path.dropFirst(8) : url.path, iconPath: iconPath)
+                : engine.serve(url.absoluteString)
+            Task { @MainActor in self.finish(key, url: url, served: served, app: app, pictures: !forCard) }
         }
     }
 
     private static let serving = DispatchQueue(label: "app.supergloss.serve", qos: .userInitiated, attributes: .concurrent)
 
-    private func finish(_ key: ObjectIdentifier, url: URL, served: Engine.Served?, app: Bool) {
+    /// `pictures` false: for the share card, which is text only, so they are never fetched.
+    private func finish(_ key: ObjectIdentifier, url: URL, served: Engine.Served?, app: Bool, pictures: Bool) {
         guard let task = active.removeValue(forKey: key) else { return }
         var headers = [
             "Content-Type": served?.mime ?? "text/plain",
@@ -309,7 +391,7 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
             "Cache-Control": app ? "max-age=31536000, immutable" : "no-cache",
         ]
         // An entry may run its own scripts, but nothing it does reaches the network.
-        if !app { headers["Content-Security-Policy"] = "connect-src sgloss: data: blob:" }
+        if !app { headers["Content-Security-Policy"] = "connect-src sgloss: data: blob:" + (pictures ? "" : "; img-src 'none'; media-src 'none'") }
         let resp = HTTPURLResponse(url: url, statusCode: served == nil ? 404 : 200, httpVersion: "HTTP/1.1", headerFields: headers)!
         task.didReceive(resp)
         task.didReceive(served?.data ?? Data())
@@ -385,3 +467,51 @@ enum AppResources {
         return out as Data
     }
 }
+
+#if DEBUG
+/// For checking Share as Image in a running build: selects text in an entry as a drag would.
+extension ArticleCoordinator {
+    static let debugSelectScript = """
+    if (window.top !== window) addEventListener('message', (e) => {
+      const m = e.data && e.data.sgDebugSelect;
+      if (!m) return;
+      const nodes = [];
+      let all = '';
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) {
+        if (!n.parentElement.getClientRects().length || /^(SCRIPT|STYLE)$/.test(n.parentElement.tagName)) continue;
+        nodes.push([n, all.length]); all += n.data;
+      }
+      const r = document.createRange();
+      if (!m.from && !m.before) r.selectNodeContents(document.body);
+      else {
+        const i = m.before ? 0 : all.indexOf(m.from), j = m.to ? all.indexOf(m.to, i) + m.to.length : i + m.from.length;
+        if (i < 0 || j < i) return parent.postMessage({ sgDebugRect: null }, '*');
+        const a = nodes.findLast(([, o]) => o <= i), b = nodes.find(([n, o]) => o + n.data.length >= j);
+        r.setStart(a[0], i - a[1]); r.setEnd(b[0], j - b[1]);
+        if (m.before) r.setStartBefore(document.querySelector(m.before));
+      }
+      getSelection().removeAllRanges(); getSelection().addRange(r);
+      parent.postMessage({ sgDebugRect: r.getBoundingClientRect().top }, '*');
+    });
+    """
+
+    func debugSelect(dict: String, from: String, to: String, before: String) {
+        guard let hit = model.shown?.hits.first(where: { $0.dict == dict || $0.name.localizedCaseInsensitiveContains(dict) }),
+              let args = try? JSONSerialization.data(withJSONObject: [hit.dict, from, to, before]),
+              let json = String(data: args, encoding: .utf8) else { return }
+        web?.evaluateJavaScript("""
+            (([id, from, to, before]) => {
+              const f = document.querySelector(`section.src[data-id="${id}"] iframe`);
+              const on = (e) => {
+                if (!e.data || !('sgDebugRect' in e.data)) return;
+                removeEventListener('message', on);
+                if (e.data.sgDebugRect != null) scrollTo(0, f.getBoundingClientRect().top + scrollY + e.data.sgDebugRect - 160);
+              };
+              addEventListener('message', on);
+              f.contentWindow.postMessage({ sgDebugSelect: { from, to, before } }, '*');
+            })(\(json))
+            """, completionHandler: nil)
+    }
+}
+#endif

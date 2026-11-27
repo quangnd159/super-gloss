@@ -1,7 +1,9 @@
 // Renders words the way Super Gloss does, with the app's own Web/ folder over the real
 // core, and reports each article frame that scrolls sideways, misses an image, reads in
 // the browser's default face, raises a script error or keeps growing. Pages in fixtures/
-// stand in for markup the dictionaries at hand don't have. Run it through
+// stand in for markup the dictionaries at hand don't have. With --cards, each entry is also
+// shared as an image twice, as the app does it: a few words must make a card, the whole entry
+// a card or the too-long notice. Run it through
 // scripts/render-audit.sh, from the repository root.
 import AppKit
 import WebKit
@@ -13,6 +15,7 @@ var dark = false
 var shots: URL?
 var only: String?
 var random = 0
+var cards = false
 var roots: [String] = []
 var words: [String] = []
 var rest = CommandLine.arguments.dropFirst()
@@ -20,6 +23,7 @@ while let a = rest.popFirst() {
     switch a {
     case "--width": width = CGFloat(Double(rest.popFirst() ?? "") ?? 1000)
     case "--dark": dark = true
+    case "--cards": cards = true
     case "--shots": shots = URL(fileURLWithPath: rest.popFirst() ?? "shots")
     case "--only": only = rest.popFirst()
     case "--random": random = Int(rest.popFirst() ?? "") ?? 0
@@ -69,14 +73,19 @@ final class Host: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     var probes: [[String: Any]] = []
     var ready = false
     var missing: [String] = []
+    var frames: [String: WKFrameInfo] = [:]
+    var shared: [String: Any]?
+    var card: [String: Any]?
 
     func webView(_ w: WKWebView, start task: any WKURLSchemeTask) {
         let url = task.request.url!
         var data: Data?
         var mime = "application/octet-stream"
-        switch url.host {
+        // The share card's own files, on the entry's origin, as the app serves them.
+        let card = url.host != "app" && url.path.hasPrefix("/__card/")
+        switch card ? "app" : url.host {
         case "app":
-            data = try? Data(contentsOf: web.appendingPathComponent(url.path))
+            data = try? Data(contentsOf: web.appendingPathComponent(card ? "card/" + url.path.dropFirst(8) : url.path))
             mime = ["html": "text/html", "css": "text/css", "js": "text/javascript"][url.pathExtension].map { $0 + "; charset=utf-8" } ?? mime
         case "fixture":
             // Wrapped as Library::article_page wraps an entry.
@@ -96,8 +105,10 @@ final class Host: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
             }
         }
         if data == nil { missing.append(url.absoluteString) }
-        task.didReceive(HTTPURLResponse(url: url, statusCode: data == nil ? 404 : 200, httpVersion: "HTTP/1.1",
-                                        headerFields: ["Content-Type": mime])!)
+        var headers = ["Content-Type": mime]
+        // The card's entries are text only, as in the app.
+        if w !== view, !card, url.host != "app" { headers["Content-Security-Policy"] = "img-src 'none'; media-src 'none'" }
+        task.didReceive(HTTPURLResponse(url: url, statusCode: data == nil ? 404 : 200, httpVersion: "HTTP/1.1", headerFields: headers)!)
         task.didReceive(data ?? Data())
         task.didFinish()
     }
@@ -105,8 +116,10 @@ final class Host: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         guard let b = m.body as? [String: Any] else { return }
-        if m.name == "probe" { probes.append(b) }
+        if m.name == "probe" { probes.append(b); frames[b["url"] as! String] = m.frameInfo }
+        if m.name == "card" { card = b }
         if b["type"] as? String == "loaded" { ready = true }
+        if b["type"] as? String == "share" { shared = b }
     }
 }
 
@@ -137,6 +150,14 @@ window.ignoresMouseEvents = true
 window.level = .floating
 window.orderFrontRegardless()
 view.load(URLRequest(url: URL(string: "sgloss://app/index.html")!))
+// The card's view is never on screen, as in the app (ShareCard).
+let cardConfig = WKWebViewConfiguration()
+cardConfig.websiteDataStore = config.websiteDataStore
+cardConfig.setURLSchemeHandler(host, forURLScheme: "sgloss")
+cardConfig.userContentController.add(host, name: "card")
+let cardView = WKWebView(frame: NSRect(x: 0, y: 0, width: 540, height: 675), configuration: cardConfig)
+cardView.setValue(false, forKey: "drawsBackground")
+cardView.appearance = app.appearance
 
 func spin(_ seconds: Double) {
     let until = Date().addingTimeInterval(seconds)
@@ -146,10 +167,10 @@ func spin(_ seconds: Double) {
         }
     }
 }
-func eval(_ js: String) -> Any? {
+func eval(_ js: String, in frame: WKFrameInfo? = nil, on page: WKWebView = view) -> Any? {
     var result: Any?
     var done = false
-    view.evaluateJavaScript(js) { v, _ in result = v; done = true }
+    page.evaluateJavaScript(js, in: frame, in: .page) { r in result = try? r.get(); done = true }
     while !done { spin(0.01) }
     return result
 }
@@ -207,6 +228,59 @@ func shoot(_ word: String, to dir: URL) {
     view.frame = window.contentLayoutRect
 }
 
+// ---------- share as image ----------
+
+struct Card { let word: String; let source: String; let what: String; let ms: Int; let problem: String? }
+var made: [Card] = []
+
+// Selects in each frame what `select` sets `r` to, has the page hand it over as it does for
+// ⇧⌘I, and makes its card. `fits`: it must be ready, not too long.
+func shareCards(_ word: String, _ hits: [[String: Any]]) {
+    for hit in hits {
+        let url = hit["url"] as! String
+        guard let frame = host.frames[url] else { continue }
+        for (what, fits, select) in [
+            ("a few words", true, "for (const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); w.nextNode();) { const n = w.currentNode, m = /\\p{L}+\\s+\\p{L}+\\s+\\p{L}+/u.exec(n.data); if (m && n.parentElement.getClientRects().length) { r.setStart(n, m.index); r.setEnd(n, m.index + m[0].length); break; } }"),
+            ("the whole entry", false, "r.selectNodeContents(document.querySelector('.sg-entry') || document.body)"),
+        ] {
+            host.shared = nil
+            host.card = nil
+            guard eval("(() => { const r = document.createRange(); \(select); getSelection().removeAllRanges(); getSelection().addRange(r); return r.collapsed ? 0 : 1; })()", in: frame) as? Int == 1 else { continue }
+            _ = eval("[...document.querySelectorAll('iframe')].find((f) => f.src.split('#')[0] === '\(url)').contentWindow.postMessage({ sg: { type: 'share' } }, '*'), 0")
+            var deadline = Date().addingTimeInterval(2)
+            while host.shared == nil && Date() < deadline { spin(0.01) }
+            guard let s = host.shared else {
+                made.append(Card(word: word, source: hit["name"] as! String, what: what, ms: 0, problem: "the page didn't hand it over"))
+                continue
+            }
+            var c = URLComponents(string: "sgloss://\(hit["id"]!)/__card/card.html")!
+            c.queryItems = [("e", URLComponents(string: url)?.queryItems?.first?.value), ("word", word), ("name", hit["name"] as? String),
+                            ("start", s["start"] as? String), ("end", s["end"] as? String), ("text", s["text"] as? String)].map { URLQueryItem(name: $0, value: $1) }
+            c.percentEncodedQuery = c.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+            let t = Date()
+            cardView.load(URLRequest(url: c.url!))
+            deadline = t.addingTimeInterval(6)
+            while host.card == nil && Date() < deadline { spin(0.01) }
+            let ms = Int(Date().timeIntervalSince(t) * 1000)
+            let state = host.card?["state"] as? String ?? "timed out"
+            var problem: String? = state == "ready" || state == "too-long" && !fits ? nil : "\(state) \(host.card?["reason"] ?? "")"
+            if state == "ready" {
+                // Something marked, between the byline and the mark.
+                problem = eval("""
+                    (() => {
+                      const box = (s) => document.querySelector(s).getBoundingClientRect();
+                      const g = box('.grp'), p = [...document.querySelectorAll('.win')].at(-1).getBoundingClientRect();
+                      return !(p.height > 0) ? 'no passage' : !(document.querySelector('.rule')?.offsetHeight > 0) ? 'no accent line'
+                        : g.top < box('.by').bottom || g.bottom > box('.mark').top ? 'out of its room' : '';
+                    })()
+                    """, on: cardView) as? String
+                if problem == "" { problem = nil }
+            }
+            made.append(Card(word: word, source: hit["name"] as! String, what: what, ms: ms, problem: problem))
+        }
+    }
+}
+
 for word in words {
     let result = json(take(word.withCString { sg_lookup(lib, $0) })) as? [String: Any] ?? [:]
     let hits = (result["hits"] as? [[String: Any]] ?? []).compactMap { hit -> [String: Any]? in
@@ -217,6 +291,7 @@ for word in words {
                 "url": "sgloss://\(id)/?e=" + entries.map(String.init).joined(separator: ",")]
     }
     render(word, hits)
+    if cards { shareCards(word, hits) }
 }
 if only == nil {
     render("fixtures", fixtures.flatMap { f in
@@ -246,6 +321,13 @@ list("Garbled text", frames.filter { $0.probe["garbled"] is String }) { "…\($0
 list("Default face (Times)", frames.filter { ($0.probe["face"] as! String).hasPrefix("Times") }) { "\($0.probe["face"]!)" }
 list("Missing images", frames.filter { !($0.probe["broken"] as! [String]).isEmpty }) { ($0.probe["broken"] as! [String]).prefix(3).joined(separator: " ") }
 list("Script errors", frames.filter { !($0.probe["errors"] as! [String]).isEmpty }) { ($0.probe["errors"] as! [String]).prefix(2).joined(separator: " | ") }
+if cards {
+    let ms = made.map(\.ms).sorted()
+    print("\n\(made.count) cards, median \(ms.isEmpty ? 0 : ms[ms.count / 2]) ms, slowest \(ms.last ?? 0) ms")
+    let bad = made.filter { $0.problem != nil }
+    print("Cards gone wrong: \(bad.count)")
+    for c in bad.prefix(40) { print("  \(c.source) · \(c.word) · \(c.what): \(c.problem!)") }
+}
 if !host.missing.isEmpty {
     print("\nResources not found: \(Set(host.missing).count)")
     for u in Set(host.missing).sorted().prefix(20) { print("  \(names[URL(string: u)?.host ?? ""] ?? "") \(u)") }
