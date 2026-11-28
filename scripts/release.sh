@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Builds a signed, notarized Super Gloss DMG in dist/, and the same app zipped: the zip is
-# what the app's updater downloads, so attach both to the GitHub release:
+# what the app's updater downloads, so attach both to the GitHub release, under these names
+# and tag (the updater finds the zip by them, without GitHub's API):
 #   gh release create v<version> dist/SuperGloss-<version>.dmg dist/SuperGloss-<version>.zip
 #
 # Signing uses the first "Developer ID Application" identity in your keychain

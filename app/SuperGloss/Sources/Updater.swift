@@ -1,5 +1,4 @@
 import AppKit
-import CryptoKit
 import Observation
 import OSLog
 import Security
@@ -8,12 +7,15 @@ import Security
 /// each release carries the signed app zipped (scripts/release.sh makes both), and that is
 /// the update. A zip unpacks without mounting anything, which macOS would guard.
 ///
-/// A newer release's zip is fetched in the background and checked against the digest GitHub
-/// lists for it; the app inside is admitted only if it is newer and satisfies this app's own
-/// designated requirement (same identifier, same Developer ID team), so nothing but a build we
-/// signed can replace this one. It waits on the app's own volume and goes in with one atomic
-/// swap at relaunch: at once from the pill, by itself while Super Gloss is out of sight, or at
-/// quit. The reader comes back to the same word, at the same place.
+/// The newest release is read off the redirect behind github.com's releases/latest, not from
+/// GitHub's API, whose anonymous quota (60 an hour) is shared with everything on the network.
+/// A newer release's zip is fetched in the background; the app inside is admitted only if it is
+/// newer and satisfies this app's own designated requirement (same identifier, same Developer ID
+/// team) under strict validation, which covers every file in it, so nothing but a build we
+/// signed can replace this one. (A digest from the same server would add nothing to that.) It
+/// waits on the app's own volume and goes in with one atomic swap at relaunch: at once from the
+/// pill, by itself while Super Gloss is out of sight, or at quit. The reader comes back to the
+/// same word, at the same place.
 @MainActor @Observable
 final class Updater {
     static let shared = Updater()
@@ -71,8 +73,11 @@ final class Updater {
 
     private let defaults = UserDefaults.standard
     private static let log = Logger(subsystem: "app.supergloss.SuperGloss", category: "update")
-    private static let feed = URL(string: "https://api.github.com/repos/quangnd159/super-gloss/releases/latest")!
+    private static let feed = URL(string: "https://github.com/quangnd159/super-gloss/releases/latest")!
     private static let checkEvery: Duration = .seconds(6 * 3600)
+    /// After a check nobody asked for couldn't reach the server (offline at login, say): two
+    /// requests an hour at most, never a download.
+    private static let retryAfter: Duration = .seconds(30 * 60)
 
     private init() {}
 
@@ -94,12 +99,12 @@ final class Updater {
         scheduleChecks()
     }
 
-    /// Checks shortly after launch, then every few hours, while automatic checks are on.
-    func scheduleChecks() {
+    /// Checks shortly after launch (or `after`), then every few hours, while automatic checks are on.
+    func scheduleChecks(after first: Duration = .seconds(4)) {
         scheduleTask?.cancel()
         guard enabled, AppModel.shared.prefs.checksForUpdates else { return }
         scheduleTask = Task {
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: first)
             while !Task.isCancelled {
                 check()
                 try? await Task.sleep(for: Self.checkEvery)
@@ -155,36 +160,40 @@ final class Updater {
             }
             do {
                 let release: Release
-                do { release = try await Self.latest(feed) } catch let e as UpdateError { throw e } catch {
-                    throw UpdateError("Couldn't reach GitHub", error)
+                do { release = try await Self.latest(feed) } catch {
+                    if !userAsked { scheduleChecks(after: Self.retryAfter) }
+                    throw UpdateError(reaching: error, Self.couldntCheck)
                 }
                 guard Self.isNewer(release.version, than: current) else {
                     if userAsked { settle(.current) } else { endQuietly() }
                     return
                 }
-                guard let archive = release.archive, let dir = Self.stagingDirectory() else {
-                    phase = .available(version: release.version, page: release.page)
-                    if userAsked || defaults.string(forKey: Keys.dismissed) != release.version { show() }
-                    return
-                }
-                phase = .downloading(version: release.version)
-                let app: URL
-                do {
-                    app = try await Task.detached(priority: .utility) {
-                        try await Self.fetch(archive, digest: release.digest, into: dir, newerThan: current)
-                    }.value
-                } catch {
+                if let dir = Self.stagingDirectory() {
+                    phase = .downloading(version: release.version)
+                    let app: URL?
+                    do {
+                        app = try await Task.detached(priority: .utility) {
+                            try await Self.fetch(release.archive, into: dir, newerThan: current)
+                        }.value
+                    } catch {
+                        try? FileManager.default.removeItem(at: dir)
+                        throw UpdateError(reaching: error, Self.couldntDownload)
+                    }
+                    if let app {
+                        staged = Staged(app: app, dir: dir, version: release.version, page: release.page)
+                        phase = .ready(version: release.version)
+                        if userAsked || defaults.string(forKey: Keys.dismissed) != release.version {
+                            if NSApp.isActive { show() } else { pendingPill = true }
+                        }
+                        watchForIdle()
+                        return
+                    }
                     try? FileManager.default.removeItem(at: dir)
-                    throw (error as? UpdateError) ?? UpdateError("Couldn't download the update", error)
                 }
-                staged = Staged(app: app, dir: dir, version: release.version, page: release.page)
-                phase = .ready(version: release.version)
-                if userAsked || defaults.string(forKey: Keys.dismissed) != release.version {
-                    if NSApp.isActive { show() } else { pendingPill = true }
-                }
-                watchForIdle()
+                phase = .available(version: release.version, page: release.page)
+                if userAsked || defaults.string(forKey: Keys.dismissed) != release.version { show() }
             } catch {
-                let e = (error as? UpdateError) ?? UpdateError("Couldn't check for updates", error)
+                let e = (error as? UpdateError) ?? UpdateError(Self.couldntCheck, error)
                 Self.log.error("\(e.message, privacy: .public): \(e.cause, privacy: .public)")
                 if userAsked {
                     settle(.failed(e.message))
@@ -239,22 +248,26 @@ final class Updater {
         do {
             try Self.admit(s.app, newerThan: version)
         } catch {
-            staged = nil
-            try? FileManager.default.removeItem(at: s.dir)
             Self.log.error("The staged update no longer passes: \(String(describing: error), privacy: .public)")
-            return false
+            return cantSwap(s)
         }
         guard renamex_np(s.app.path, target.path, UInt32(RENAME_SWAP)) == 0 else {
-            staged = nil
-            try? FileManager.default.removeItem(at: s.dir)
-            settle(.failed("Couldn't replace the app where it is"))
-            return false
+            Self.log.error("Couldn't swap the update in: \(String(cString: strerror(errno)), privacy: .public)")
+            return cantSwap(s)
         }
         staged = nil
         idleTask?.cancel()
         LSRegisterURL(target as CFURL, true)
         try? FileManager.default.removeItem(at: s.dir)
         return true
+    }
+
+    /// The staged copy can't go in, so the release page is offered instead.
+    private func cantSwap(_ s: Staged) -> Bool {
+        staged = nil
+        try? FileManager.default.removeItem(at: s.dir)
+        settle(.available(version: s.version, page: s.page))
+        return false
     }
 
     private func remember(updatedTo s: Staged) {
@@ -346,9 +359,20 @@ final class Updater {
     private struct Release: Sendable {
         let version: String
         let page: URL
-        /// The zipped app; older releases have only the disk image.
-        let archive: URL?
-        let digest: String?
+        /// The zipped app, under the name scripts/release.sh gives it; older releases have
+        /// only the disk image, and it isn't there.
+        let archive: URL
+
+        /// From a release page, …/releases/tag/v1.3.1.
+        init?(page: URL) {
+            let tag = page.lastPathComponent
+            let releases = page.deletingLastPathComponent()
+            guard releases.lastPathComponent == "tag", tag.hasPrefix("v") else { return nil }
+            version = String(tag.dropFirst())
+            self.page = page
+            archive = releases.deletingLastPathComponent()
+                .appendingPathComponent("download/\(tag)/SuperGloss-\(version).zip")
+        }
     }
 
     private struct UpdateError: Error {
@@ -356,53 +380,56 @@ final class Updater {
         let message: String
         /// For the log.
         let cause: String
-        init(_ m: String, _ underlying: (any Error)? = nil) {
+        init(_ m: String, _ cause: Any? = nil) {
             message = m
-            cause = underlying.map { String(describing: $0) } ?? m
+            self.cause = cause.map { String(describing: $0) } ?? m
         }
-    }
 
-    nonisolated private static func latest(_ feed: URL) async throws -> Release {
-        var req = URLRequest(url: feed, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: req)
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 { throw UpdateError("GitHub answered \(http.statusCode)") }
-        struct Wire: Decodable {
-            struct Asset: Decodable {
-                let name: String
-                let browserDownloadUrl: URL
-                let digest: String?
+        /// A failure to talk to the server: offline is said as such, the rest as `m`.
+        init(reaching error: any Error, _ m: String) {
+            if let e = error as? UpdateError {
+                self = e
+                return
             }
-            let tagName: String
-            let htmlUrl: URL
-            let assets: [Asset]
+            let offline: [URLError.Code] = [.notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff]
+            self.init(offline.contains((error as? URLError)?.code ?? .unknown) ? "This Mac is offline" : m, error)
         }
-        let dec = JSONDecoder()
-        dec.keyDecodingStrategy = .convertFromSnakeCase
-        let w = try dec.decode(Wire.self, from: data)
-        let zip = w.assets.first { $0.name.hasSuffix(".zip") }
-        let v = w.tagName.hasPrefix("v") ? String(w.tagName.dropFirst()) : w.tagName
-        let digest = zip?.digest.flatMap { $0.hasPrefix("sha256:") ? String($0.dropFirst(7)) : nil }
-        return Release(version: v, page: w.htmlUrl, archive: zip?.browserDownloadUrl, digest: digest)
     }
 
-    /// Downloads the release's zip into `dir`, unpacks the app and admits it.
-    nonisolated private static func fetch(_ archive: URL, digest: String?, into dir: URL, newerThan current: String) async throws -> URL {
+    /// Stops at the first redirect, which is the answer.
+    private final class Unredirected: NSObject, URLSessionTaskDelegate, Sendable {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? { nil }
+    }
+
+    /// Where releases/latest redirects: the newest release's page. The redirect itself has no
+    /// body, so only headers come back. (GitHub fails HEAD now and then; GET it is.)
+    nonisolated private static func latest(_ feed: URL) async throws -> Release {
+        let req = URLRequest(url: feed, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        let (_, response) = try await URLSession.shared.data(for: req, delegate: Unredirected())
+        let http = response as? HTTPURLResponse
+        guard let location = http?.value(forHTTPHeaderField: "Location"),
+              let page = URL(string: location, relativeTo: feed)?.absoluteURL,
+              let release = Release(page: page)
+        else { throw UpdateError(couldntCheck, "\(feed) answered \(http?.statusCode ?? 0), Location \(http?.value(forHTTPHeaderField: "Location") ?? "none")") }
+        return release
+    }
+
+    /// Downloads the release's zip into `dir`, unpacks the app and admits it; nil when the
+    /// release has no zip.
+    nonisolated private static func fetch(_ archive: URL, into dir: URL, newerThan current: String) async throws -> URL? {
         let fm = FileManager.default
         let (tmp, response) = try await URLSession.shared.download(from: archive)
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 { throw UpdateError("The download failed (\(http.statusCode))") }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 404 { return nil }
+        guard status == 200 else { throw UpdateError(couldntDownload, "\(archive) answered \(status)") }
         let zip = dir.appendingPathComponent("update.zip")
         try fm.moveItem(at: tmp, to: zip)
-        if let want = digest {
-            let got = SHA256.hash(data: try Data(contentsOf: zip, options: .mappedIfSafe))
-                .map { String(format: "%02x", $0) }.joined()
-            guard got == want.lowercased() else { throw UpdateError("The download was damaged") }
-        }
         let unpacked = dir.appendingPathComponent("unpacked", isDirectory: true)
         try run("/usr/bin/ditto", ["-x", "-k", zip.path, unpacked.path])
         try? fm.removeItem(at: zip)
         guard let app = try fm.contentsOfDirectory(at: unpacked, includingPropertiesForKeys: nil)
-            .first(where: { $0.pathExtension == "app" }) else { throw UpdateError("The download has no app in it") }
+            .first(where: { $0.pathExtension == "app" }) else { throw UpdateError(unverified, "no app in the zip") }
         try admit(app, newerThan: current)
         return app
     }
@@ -411,15 +438,16 @@ final class Updater {
     nonisolated private static func admit(_ app: URL, newerThan current: String) throws {
         let plist = app.appendingPathComponent("Contents/Info.plist")
         guard let info = NSDictionary(contentsOf: plist), let v = info["CFBundleShortVersionString"] as? String,
-              isNewer(v, than: current) else { throw UpdateError("The download isn't a newer version") }
-        guard let req = ownRequirement()?.0 else { throw UpdateError("This build can't check signatures") }
+              isNewer(v, than: current) else { throw UpdateError(unverified, "not newer than \(current)") }
+        guard let req = ownRequirement()?.0 else { throw UpdateError(unverified, "no requirement of our own") }
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(app as CFURL, [], &code) == errSecSuccess, let code else {
-            throw UpdateError("The update isn't signed")
+            throw UpdateError(unverified, "not signed")
         }
         let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate | kSecCSCheckNestedCode)
-        guard SecStaticCodeCheckValidityWithErrors(code, flags, req, nil) == errSecSuccess else {
-            throw UpdateError("The update isn't signed by Super Gloss")
+        var why: Unmanaged<CFError>?
+        guard SecStaticCodeCheckValidityWithErrors(code, flags, req, &why) == errSecSuccess else {
+            throw UpdateError(unverified, why.map { $0.takeRetainedValue() } ?? "not signed by us")
         }
     }
 
@@ -450,8 +478,6 @@ final class Updater {
         return try? fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: app, create: true)
     }
 
-    private struct ToolFailure: Error, CustomStringConvertible { let description: String }
-
     @discardableResult
     nonisolated private static func run(_ tool: String, _ args: [String]) throws -> Data {
         let p = Process()
@@ -465,7 +491,7 @@ final class Updater {
         p.waitUntilExit()
         guard p.terminationStatus == 0 else {
             let said = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw UpdateError("Couldn't open the update", ToolFailure(description: "\(tool) \(p.terminationStatus): \(said)"))
+            throw UpdateError(unverified, "\(tool) \(p.terminationStatus): \(said)")
         }
         return data
     }
@@ -481,12 +507,19 @@ final class Updater {
         return false
     }
 
+    nonisolated private static let couldntCheck = "Couldn't check for updates — try again later"
+    nonisolated private static let couldntDownload = "Couldn't download the update — try again later"
+    /// Whatever is wrong with it (not ours, not newer, not unpacking), the next release fixes.
+    nonisolated private static let unverified = "Couldn't verify the update — try again later"
+
     private enum Keys {
         static let updated = "updatedTo"
         static let resume = "resumeAt"
         static let dismissed = "updateDismissed"
-        /// A different release feed (a URL to JSON shaped like GitHub's), for testing. Only
-        /// builds signed as this one can come through it.
-        static let feedOverride = "SGUpdateFeed"
+        /// A different releases/latest, for testing: a URL that redirects to …/releases/tag/v<version>,
+        /// with the zip at …/releases/download/v<version>/SuperGloss-<version>.zip. Only builds
+        /// signed as this one can come through it. (1.3.1 and earlier read a JSON feed from
+        /// "SGUpdateFeed"; a new name keeps a test override away from an installed older copy.)
+        static let feedOverride = "SGUpdateReleases"
     }
 }

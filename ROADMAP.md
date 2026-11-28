@@ -8,6 +8,11 @@ Super Gloss stays minimal and should just work. Each item below has to fit that.
 2. **Lemmatizers beyond English** (French, German, Spanish, …), so "ran → run"-style matching works in every language.
 3. **UI tests.** Automated tests for the hotkey and focus behavior. (The universal build and the signed, notarized DMG shipped in 1.0.0.)
 
+## Shipped in 1.3.2
+
+- **Update checks that get through.** Check for Updates no longer fails with "GitHub answered 403" when other apps on your network have been asking GitHub too.
+- **Plain messages.** When a check or download does go wrong, the message says so in plain words, and if an update can't be put in place, Super Gloss offers to download it instead.
+
 ## Shipped in 1.3.1
 
 - **One card per paste.** Copy in the share menu now gives one image: pasting a copied card into a browser, say a Facebook post, used to attach it three times.
