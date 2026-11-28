@@ -287,7 +287,19 @@ final class ArticleCoordinator: NSObject, ArticleController, WKURLSchemeHandler,
                     at = NSRect(x: min(max(rect.minX, 0), web.bounds.maxX), y: rect.maxY <= 0 ? 0 : web.bounds.maxY,
                                 width: min(rect.width, web.bounds.width), height: 0)
                 }
-                NSSharingServicePicker(items: [NSItemProvider(contentsOf: file) ?? file]).show(relativeTo: at, of: web, preferredEdge: .maxY)
+                // The PNG and its file URL, and nothing else: Copy then leaves one pasteboard item carrying both,
+                // as a screenshot tool does. `NSItemProvider(contentsOf:)` adds `public.url` too, which Copy writes
+                // as items of their own, and a browser pastes the card three times.
+                let card = NSItemProvider()
+                card.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) {
+                    $0(file, false, nil)
+                    return nil
+                }
+                card.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier, visibility: .all) {
+                    $0(file.dataRepresentation, nil)
+                    return nil
+                }
+                NSSharingServicePicker(items: [card]).show(relativeTo: at, of: web, preferredEdge: .maxY)
                 if let t = self.shareAsked {
                     Self.log.debug("picker \(Int((ContinuousClock.now - t) / .milliseconds(1))) ms after asking")
                 }

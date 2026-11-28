@@ -8,6 +8,10 @@ Super Gloss stays minimal and should just work. Each item below has to fit that.
 2. **Lemmatizers beyond English** (French, German, Spanish, …), so "ran → run"-style matching works in every language.
 3. **UI tests.** Automated tests for the hotkey and focus behavior. (The universal build and the signed, notarized DMG shipped in 1.0.0.)
 
+## Shipped in 1.3.1
+
+- **One card per paste.** Copy in the share menu now gives one image: pasting a copied card into a browser, say a Facebook post, used to attach it three times.
+
 ## Shipped in 1.3.0
 
 - **Share as Image.** Select a passage in an entry and press `⇧⌘I`, or right-click it: Super Gloss sets it on a card under the word, marked where it stands in its dictionary's own typesetting, and hands the image to the system's share menu. One size (1080 × 1350), text only, in the app's light or dark.
